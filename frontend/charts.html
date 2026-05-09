@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>图表分析 - 临床研究看板</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <style>
+        .chart-toolbar {
+            background: var(--card-bg);
+            border-bottom: 1px solid var(--border);
+            padding: 10px 24px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .chart-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            padding: 16px 24px;
+        }
+        .chart-card {
+            background: var(--card-bg);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+        .chart-card.full-width {
+            grid-column: 1 / -1;
+        }
+        .chart-body {
+            height: 400px;
+            padding: 8px;
+        }
+        .chart-body.tall {
+            height: 500px;
+        }
+        @media (max-width: 1024px) {
+            .chart-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+<div class="page-container">
+    <!-- 顶部导航 -->
+    <nav class="top-nav">
+        <div class="nav-brand">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="7" height="7" rx="1"/>
+                <rect x="14" y="3" width="7" height="7" rx="1"/>
+                <rect x="3" y="14" width="7" height="7" rx="1"/>
+                <rect x="14" y="14" width="7" height="7" rx="1"/>
+            </svg>
+            临床研究看板
+        </div>
+        <div class="nav-links">
+            <a href="/">日历</a>
+            <a href="/charts" class="active">图表</a>
+        </div>
+    </nav>
+
+    <!-- 工具栏 -->
+    <div class="chart-toolbar">
+        <label style="font-size:14px;font-weight:500">项目:</label>
+        <select id="chartProject" class="form-select" style="width:200px"></select>
+        <div style="flex:1"></div>
+        <label style="font-size:13px">肿瘤指标:</label>
+        <select id="markerSelect" class="form-select" style="width:120px" onchange="Charts.loadTumorMarkerTrend()">
+            <option value="CEA">CEA</option>
+            <option value="CA125">CA125</option>
+            <option value="CA199">CA199</option>
+            <option value="AFP">AFP</option>
+            <option value="PSA">PSA</option>
+        </select>
+    </div>
+
+    <!-- 图表网格 -->
+    <div style="flex:1;overflow:auto">
+        <div class="chart-grid">
+            <!-- 基线统计表 - 全宽 -->
+            <div class="chart-card full-width">
+                <div id="chartBaseline" style="min-height:200px"></div>
+            </div>
+
+            <!-- 瀑布图 -->
+            <div class="chart-card">
+                <div class="chart-body tall" id="chartWaterfall"></div>
+            </div>
+
+            <!-- 泳道图 -->
+            <div class="chart-card">
+                <div class="chart-body tall" id="chartSwimmer"></div>
+                <!-- 泳道图控制面板 -->
+                <div class="swimmer-controls" id="swimmerControls" style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:8px 12px;border-top:1px solid var(--border);font-size:13px;background:#fafbfc">
+                    <label style="font-weight:500">分组:</label>
+                    <select id="swGroupBy" class="form-select" style="width:110px" onchange="Charts._onSwimmerControlChange()">
+                        <option value="">不分组</option>
+                        <option value="dose_group">按剂量组</option>
+                        <option value="cancer_type">按癌肿类型</option>
+                    </select>
+                    <label style="font-weight:500;margin-left:8px">排序:</label>
+                    <select id="swSortBy" class="form-select" style="width:110px" onchange="Charts._onSwimmerControlChange()">
+                        <option value="patient_id">患者编号</option>
+                        <option value="dose_group">剂量组</option>
+                        <option value="cancer_type">癌肿类型</option>
+                    </select>
+                    <span style="margin-left:8px;font-weight:500">剂量组筛选:</span>
+                    <span id="swDoseFilters" style="display:flex;gap:8px;flex-wrap:wrap"></span>
+                    <span style="margin-left:8px;font-weight:500">癌肿筛选:</span>
+                    <span id="swCancerFilters" style="display:flex;gap:8px;flex-wrap:wrap"></span>
+                </div>
+            </div>
+
+            <!-- 蜘蛛图 - 全宽 -->
+            <div class="chart-card full-width">
+                <div class="chart-body tall" id="chartSpider"></div>
+            </div>
+
+            <!-- 肿瘤指标趋势 - 全宽 -->
+            <div class="chart-card full-width">
+                <div class="chart-body tall" id="chartMarker"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/charts.js"></script>
+</body>
+</html>

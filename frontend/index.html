@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>临床研究数据看板</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="page-container">
+
+    <!-- 顶部导航 -->
+    <nav class="top-nav">
+        <div class="nav-left">
+            <div class="nav-brand">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="7" height="7" rx="1"/>
+                    <rect x="14" y="3" width="7" height="7" rx="1"/>
+                    <rect x="3" y="14" width="7" height="7" rx="1"/>
+                    <rect x="14" y="14" width="7" height="7" rx="1"/>
+                </svg>
+            </div>
+            <!-- 项目下拉选择器 -->
+            <div class="project-selector">
+                <select id="projectSelect" class="project-select"></select>
+                <button class="btn btn-icon btn-xs" id="projectEditBtn" title="项目设置（含DLT观察期/剂量组/癌肿配置）" onclick="Calendar.switchTab('config')">⚙</button>
+                <button class="btn btn-icon btn-xs" id="projectAddBtn" title="新增项目">+</button>
+            </div>
+        </div>
+        <!-- Tab切换 -->
+        <div class="main-tabs">
+            <button class="main-tab active" data-tab="calendar">日历</button>
+            <button class="main-tab" data-tab="baseline">基线统计</button>
+            <button class="main-tab" data-tab="swimmer">泳道图</button>
+            <button class="main-tab" data-tab="waterfall">瀑布图</button>
+            <button class="main-tab" data-tab="spider">蜘蛛图</button>
+            <button class="main-tab" data-tab="tumorMarker">肿瘤指标</button>
+            <!-- 项目配置Tab入口已移至左上角⚙按钮，此处隐藏 -->
+            <button class="main-tab" data-tab="config" style="display:none">项目配置</button>
+        </div>
+        <div class="nav-right">
+            <label style="font-size:12px;color:#374151;margin-right:4px">配色:</label>
+            <select id="colorScheme" class="form-select" style="width:110px;font-size:12px;height:26px;padding:2px 6px">
+                <option value="default">默认</option>
+                <option value="nature">Nature</option>
+                <option value="lancet">Lancet</option>
+                <option value="jama">JAMA</option>
+                <option value="nejm">NEJM</option>
+                <option value="science">Science</option>
+                <option value="npg">NPG</option>
+                <option value="aaas">AAAS</option>
+            </select>
+            <button class="btn btn-sm" id="exportBtn">📥 导出</button>
+            <button class="btn btn-sm" id="importBtn">📤 导入</button>
+            <input type="file" id="importFile" accept=".xlsx,.xls" style="display:none">
+        </div>
+    </nav>
+
+    <!-- ===== 日历Tab ===== -->
+    <div class="tab-panel active" id="panel-calendar">
+        <div class="toolbar">
+            <div class="toolbar-group">
+                <button class="btn btn-sm" id="todayBtn">📍 今天</button>
+            </div>
+            <div class="toolbar-divider"></div>
+            <div class="toolbar-group zoom-control">
+                <button class="btn btn-icon" id="zoomOutBtn" title="缩小">−</button>
+                <span id="zoomLabel" style="font-size:12px;font-weight:500;min-width:24px;text-align:center">小</span>
+                <button class="btn btn-icon" id="zoomInBtn" title="放大">+</button>
+            </div>
+            <div class="toolbar-divider"></div>
+            <!-- 事件过滤：平铺展开 -->
+            <div class="toolbar-group" style="gap:6px">
+                <span style="font-size:11px;color:#6b7280;white-space:nowrap">事件:</span>
+                <label class="filter-chip"><input type="checkbox" checked data-filter="drug"><span class="filter-color-dot" style="background:#378ADD"></span>用药</label>
+                <label class="filter-chip"><input type="checkbox" checked data-filter="assessment"><span class="filter-color-dot" style="background:#639922"></span>疗评</label>
+                <label class="filter-chip"><input type="checkbox" checked data-filter="ae"><span class="filter-color-dot" style="background:#D85A30"></span>AE</label>
+                <label class="filter-chip"><input type="checkbox" checked data-filter="pk"><span class="filter-color-dot" style="background:#7F77DD"></span>PK</label>
+            </div>
+            <div style="flex:1"></div>
+        </div>
+        <!-- 排序 -->
+        <div class="sort-bar">
+            <span>排序:</span>
+            <span class="sort-chip active" data-sort="patient_id">编号</span>
+            <span class="sort-chip" data-sort="dose_group">剂量组</span>
+            <span class="sort-chip" data-sort="enroll_date">入组日期</span>
+            <span class="sort-chip" data-sort="cancer_type">癌肿</span>
+        </div>
+        <!-- 甘特图区域 -->
+        <div class="gantt-wrapper" id="ganttContainer">
+            <div class="empty-state"><p>加载中...</p></div>
+        </div>
+        <!-- 图例已移除 -->
+    </div>
+
+    <!-- ===== 基线统计Tab ===== -->
+    <div class="tab-panel" id="panel-baseline">
+        <div class="chart-panel"><div id="chartBaseline" style="padding:16px"></div></div>
+    </div>
+
+    <!-- ===== 瀑布图Tab ===== -->
+    <div class="tab-panel" id="panel-waterfall">
+        <div class="chart-toolbar" style="padding:8px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #e5e7eb;flex-wrap:wrap">
+            <label style="font-size:13px;font-weight:500">着色:</label>
+            <select id="wfColorBy" class="form-select" style="width:100px;font-size:12px">
+                <option value="best_response">最佳疗评</option>
+                <option value="dose_group">剂量组</option>
+                <option value="cancer_type">癌肿</option>
+            </select>
+            <div style="width:1px;height:20px;background:#e5e7eb"></div>
+            <label style="font-size:13px;font-weight:500">排序:</label>
+            <select id="wfSortBy" class="form-select" style="width:100px;font-size:12px">
+                <option value="sod_change">SOD变化</option>
+                <option value="dose_group">剂量组</option>
+                <option value="cancer_type">癌肿</option>
+            </select>
+            <div style="width:1px;height:20px;background:#e5e7eb"></div>
+            <label style="font-size:13px;font-weight:500">筛选:</label>
+            <select id="wfFilterGroup" class="form-select" style="width:110px;font-size:12px">
+                <option value="">全部剂量组</option>
+            </select>
+            <select id="wfFilterCancer" class="form-select" style="width:110px;font-size:12px">
+                <option value="">全部癌肿</option>
+            </select>
+        </div>
+        <div class="chart-panel"><div id="chartWaterfall" style="height:560px"></div></div>
+    </div>
+
+    <!-- ===== 蜘蛛图Tab ===== -->
+    <div class="tab-panel" id="panel-spider">
+        <div class="chart-toolbar" style="padding:8px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #e5e7eb;flex-wrap:wrap">
+            <label style="font-size:13px;font-weight:500">着色:</label>
+            <select id="spColorBy" class="form-select" style="width:100px;font-size:12px">
+                <option value="dose_group">剂量组</option>
+                <option value="cancer_type">癌肿</option>
+            </select>
+            <div style="width:1px;height:20px;background:#e5e7eb"></div>
+            <label style="font-size:13px;font-weight:500">筛选:</label>
+            <select id="spFilterGroup" class="form-select" style="width:110px;font-size:12px">
+                <option value="">全部剂量组</option>
+            </select>
+            <select id="spFilterCancer" class="form-select" style="width:110px;font-size:12px">
+                <option value="">全部癌肿</option>
+            </select>
+        </div>
+        <div class="chart-panel"><div id="chartSpider" style="height:560px"></div></div>
+    </div>
+
+    <!-- ===== 泳道图Tab ===== -->
+    <div class="tab-panel" id="panel-swimmer">
+        <div class="swimmer-toolbar" style="padding:8px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #e5e7eb;flex-wrap:wrap">
+            <label style="font-size:13px;font-weight:500">显示:</label>
+            <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="swShowDrug" checked> 用药</label>
+            <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="swShowAssess" checked> 疗评</label>
+            <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="swShowAE" checked> AE</label>
+            <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="swShowStatus" checked> 患者状态</label>
+            <div style="width:1px;height:20px;background:#e5e7eb"></div>
+            <label style="font-size:13px;font-weight:500">着色:</label>
+            <select id="swBarColor" class="form-select" style="width:100px;font-size:12px">
+                <option value="default">默认</option>
+                <option value="dose_group">按剂量组</option>
+                <option value="cancer_type">按癌肿</option>
+            </select>
+            <div style="width:1px;height:20px;background:#e5e7eb"></div>
+            <label style="font-size:13px;font-weight:500">排序:</label>
+            <select id="swSortBy" class="form-select" style="width:100px;font-size:12px">
+                <option value="patient_id">患者编号</option>
+                <option value="dose_group">剂量组</option>
+                <option value="cancer_type">癌肿类型</option>
+            </select>
+            <div style="width:1px;height:20px;background:#e5e7eb"></div>
+            <label style="font-size:13px;font-weight:500">Y轴显示:</label>
+            <select id="swYAxisLabel" class="form-select" style="width:120px;font-size:12px">
+                <option value="patient_id">仅编号</option>
+                <option value="with_dose">编号+剂量组</option>
+                <option value="with_cancer">编号+癌肿</option>
+                <option value="with_both">编号+剂量+癌肿</option>
+            </select>
+            <div style="width:1px;height:20px;background:#e5e7eb"></div>
+            <label style="font-size:13px;font-weight:500">状态图偏移:</label>
+            <input type="number" id="swStatusOffset" value="3" min="0" max="50" step="1" style="width:50px;font-size:12px;padding:2px 4px;border:1px solid #d1d5db;border-radius:4px" title="患者状态图示距研究状态条形的偏移量(px)" onchange="Charts._onSwimmerControlChange()">
+            <span style="font-size:11px;color:#9ca3af">px</span>
+            <div style="width:1px;height:20px;background:#e5e7eb"></div>
+            <span style="font-size:13px;font-weight:500">筛选剂量组:</span>
+            <span id="swDoseFilters" style="display:flex;gap:8px;flex-wrap:wrap"></span>
+            <span style="font-size:13px;font-weight:500">筛选癌肿:</span>
+            <span id="swCancerFilters" style="display:flex;gap:8px;flex-wrap:wrap"></span>
+        </div>
+        <div class="chart-panel"><div id="chartSwimmer" style="height:600px"></div></div>
+    </div>
+
+    <!-- ===== 肿瘤指标Tab ===== -->
+    <div class="tab-panel" id="panel-tumorMarker">
+        <div class="chart-toolbar">
+            <label style="font-size:13px">指标:</label>
+            <select id="markerSelect" class="form-select" style="width:120px">
+                <option value="CEA">CEA</option>
+                <option value="CA125">CA125</option>
+                <option value="CA199">CA199</option>
+                <option value="AFP">AFP</option>
+                <option value="PSA">PSA</option>
+            </select>
+        </div>
+        <div class="chart-panel"><div id="chartMarker" style="height:560px"></div></div>
+    </div>
+
+    <!-- ===== 项目配置Tab ===== -->
+    <div class="tab-panel" id="panel-config">
+        <div class="config-container">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+                <h2 style="font-size:16px;font-weight:600">项目配置</h2>
+                <button class="btn btn-sm" onclick="Calendar.switchTab('calendar')">← 返回日历</button>
+            </div>
+            <!-- 项目基本信息 -->
+            <div class="config-section">
+                <h3>项目基本信息</h3>
+                <div style="display:flex;flex-direction:column;gap:8px;padding:4px 0">
+                    <div style="display:flex;align-items:center;gap:10px">
+                        <label style="font-size:13px;color:#374151;min-width:70px">项目名称:</label>
+                        <input type="text" id="configProjName" class="form-input" style="flex:1;max-width:300px" onchange="ConfigPanel.saveProjectName(this.value)">
+                    </div>
+                    <div style="display:flex;align-items:center;gap:10px">
+                        <label style="font-size:13px;color:#374151;min-width:70px">项目编号:</label>
+                        <input type="text" id="configProjCode" class="form-input" style="flex:1;max-width:300px" onchange="ConfigPanel.saveProjectCode(this.value)">
+                    </div>
+                </div>
+            </div>
+            <!-- DLT观察期 -->
+            <div class="config-section">
+                <h3>DLT 观察期</h3>
+                <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
+                    <label style="font-size:13px;color:#374151">观察天数:</label>
+                    <input type="number" id="dltDaysInput" min="1" max="365" value="21"
+                        style="width:70px;padding:4px 8px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;outline:none"
+                        title="DLT观察期天数，默认21天">
+                    <button class="btn btn-primary btn-sm" onclick="ConfigPanel.saveDLTDays()">保存</button>
+                    <span id="dltSaveMsg" style="font-size:12px;color:#22c55e;display:none">✓ 已保存</span>
+                </div>
+            </div>
+            <div class="config-section">
+                <h3>剂量组管理 <button class="btn btn-sm" id="addDoseGroupBtn">+ 新增</button></h3>
+                <table class="config-table" id="doseGroupTable">
+                    <thead><tr><th>名称</th><th>颜色</th><th>排序</th><th>操作</th></tr></thead>
+                    <tbody id="doseGroupBody"></tbody>
+                </table>
+            </div>
+            <div class="config-section">
+                <h3>癌肿类型管理 <button class="btn btn-sm" id="addCancerTypeBtn">+ 新增</button></h3>
+                <table class="config-table" id="cancerTypeTable">
+                    <thead><tr><th>名称</th><th>排序</th><th>操作</th></tr></thead>
+                    <tbody id="cancerTypeBody"></tbody>
+                </table>
+            </div>
+            <!-- 危险操作 -->
+            <div class="config-section config-danger">
+                <h3>危险操作</h3>
+                <p style="font-size:13px;color:#6b7280;margin-bottom:8px">删除项目将同时删除该项目下所有患者及临床数据（用药、疗评、AE、PK、肿瘤指标等），此操作不可恢复。</p>
+                <button class="btn btn-danger btn-sm" onclick="ConfigPanel.deleteProject()">删除此项目</button>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<!-- 右侧滑出患者编辑面板 -->
+<div class="slide-panel-overlay hidden" id="slidePanelOverlay"></div>
+<div class="slide-panel hidden" id="slidePanel">
+    <div class="slide-panel-header">
+        <h3 id="slidePanelTitle">患者详情</h3>
+        <button class="slide-panel-close" id="slidePanelClose">&times;</button>
+    </div>
+    <!-- 子Tab -->
+    <div class="slide-tabs">
+        <button class="slide-tab active" data-stab="baseline">基线</button>
+        <button class="slide-tab" data-stab="medication">用药</button>
+        <button class="slide-tab" data-stab="assessment">疗评</button>
+        <button class="slide-tab" data-stab="ae">AE</button>
+        <button class="slide-tab" data-stab="pk">PK</button>
+        <button class="slide-tab" data-stab="marker">指标</button>
+    </div>
+    <div class="slide-panel-body">
+        <div class="slide-tab-content active" id="stab-baseline"><div id="spBaseline" class="sp-section"></div></div>
+        <div class="slide-tab-content" id="stab-medication">
+            <div class="sp-section">
+                <div class="sp-section-header"><h4>用药记录</h4><button class="btn btn-sm" onclick="SlidePanel.addMedication()">+ 添加</button></div>
+                <div style="overflow-x:auto"><table class="sp-table"><thead><tr><th>药物</th><th>计划日期</th><th>实际日期</th><th>剂量</th><th>周期</th><th>操作</th></tr></thead><tbody id="spMedBody"></tbody></table></div>
+            </div>
+        </div>
+        <div class="slide-tab-content" id="stab-assessment">
+            <div class="sp-section">
+                <div class="sp-section-header"><h4>肿瘤评估 (RECIST 1.1)</h4><button class="btn btn-sm" onclick="SlidePanel.addAssessment()">+ 添加</button></div>
+                <div style="overflow-x:auto"><table class="sp-table"><thead><tr><th>日期</th><th>时间点</th><th>靶病灶SOD</th><th>SOD变化</th><th>最佳疗评</th><th>确认</th><th>操作</th></tr></thead><tbody id="spAssessBody"></tbody></table></div>
+            </div>
+        </div>
+        <div class="slide-tab-content" id="stab-ae">
+            <div class="sp-section">
+                <div class="sp-section-header"><h4>不良事件</h4><button class="btn btn-sm" onclick="SlidePanel.addAE()">+ 添加</button></div>
+                <div style="overflow-x:auto"><table class="sp-table"><thead><tr><th>AE名称</th><th>发生</th><th>结束</th><th>等级</th><th>转归</th><th>关系</th><th>操作</th></tr></thead><tbody id="spAeBody"></tbody></table></div>
+            </div>
+        </div>
+        <div class="slide-tab-content" id="stab-pk">
+            <div class="sp-section">
+                <div class="sp-section-header"><h4>PK数据</h4><button class="btn btn-sm" onclick="SlidePanel.addPK()">+ 添加</button></div>
+                <div style="overflow-x:auto"><table class="sp-table"><thead><tr><th>采样日期</th><th>时间点</th><th>浓度</th><th>单位</th><th>周期</th><th>操作</th></tr></thead><tbody id="spPkBody"></tbody></table></div>
+            </div>
+        </div>
+        <div class="slide-tab-content" id="stab-marker">
+            <div class="sp-section">
+                <div class="sp-section-header"><h4>肿瘤指标</h4><button class="btn btn-sm" onclick="SlidePanel.addMarker()">+ 添加</button></div>
+                <div style="overflow-x:auto"><table class="sp-table"><thead><tr><th>日期</th><th>指标</th><th>值</th><th>单位</th><th>上限</th><th>操作</th></tr></thead><tbody id="spMarkerBody"></tbody></table></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 新增项目弹窗 -->
+<div id="projectModal" class="modal-overlay hidden">
+    <div class="modal">
+        <div class="modal-header">
+            <h3 id="projectModalTitle">新增项目</h3>
+            <button class="modal-close" onclick="Calendar.closeModal('projectModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label class="form-label">项目名称</label>
+                <input type="text" id="projName" class="form-input" placeholder="例：XYZ-001 临床试验">
+            </div>
+            <div class="form-group">
+                <label class="form-label">项目编号</label>
+                <input type="text" id="projCode" class="form-input" placeholder="例：XYZ-001">
+            </div>
+            <div class="form-group">
+                <label class="form-label">描述</label>
+                <textarea id="projDesc" class="form-input" rows="3" placeholder="项目简介..."></textarea>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button id="demoDataBtn" class="btn btn-outline" onclick="Calendar.saveProjectWithDemo()" style="margin-right:auto;display:none" title="保存项目并自动填充8例Demo患者数据">填充Demo数据</button>
+            <button class="btn" onclick="Calendar.closeModal('projectModal')">取消</button>
+            <button class="btn btn-primary" onclick="Calendar.saveProject()">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- 新增患者弹窗 -->
+<div id="patientModal" class="modal-overlay hidden">
+    <div class="modal">
+        <div class="modal-header">
+            <h3>患者入组</h3>
+            <button class="modal-close" onclick="Calendar.closeModal('patientModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-row">
+                <div class="form-group"><label class="form-label">患者编号 *</label><input type="text" id="ptId" class="form-input" placeholder="例：001"></div>
+                <div class="form-group"><label class="form-label">年龄</label><input type="number" id="ptAge" class="form-input" placeholder="岁"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label class="form-label">性别</label><select id="ptSex" class="form-select"><option value="">--</option><option value="男">男</option><option value="女">女</option></select></div>
+                <div class="form-group"><label class="form-label">ECOG评分</label><select id="ptEcog" class="form-select"><option value="">--</option><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label class="form-label">癌肿</label><select id="ptCancer" class="form-select"><option value="">--</option></select></div>
+                <div class="form-group"><label class="form-label">剂量组</label><select id="ptGroup" class="form-select"><option value="">--</option></select></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label class="form-label">入组日期</label><input type="date" id="ptEnroll" class="form-input"></div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn" onclick="Calendar.closeModal('patientModal')">取消</button>
+            <button class="btn btn-primary" onclick="Calendar.savePatient()">保存</button>
+        </div>
+    </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/utils.js"></script>
+<script src="/js/charts.js"></script>
+<script src="/js/calendar.js"></script>
+<script src="/js/slidepanel.js"></script>
+<script src="/js/config.js"></script>
+</body>
+</html>
