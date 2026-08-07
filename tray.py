@@ -179,21 +179,19 @@ def set_autostart(enable: bool):
             # 确保图标缓存文件存在（开机自启 .lnk 要引用它）
             ico = get_icon() and ICON_CACHE
             # 用系统自带 PowerShell 创建 .lnk（不依赖任何第三方包）
-            # 目标直接指向 pythonw.exe tray.py（无 vbs 中间层，WindowStyle=7 隐藏窗口）
-            # IconLocation 指向我们的蓝底白字图标，使快捷方式显示项目 icon 而非 Python 图标
+            # 目标指向 startWatch.vbs（无窗口启动器，vbs 内部用 ScriptFullName 定位 base）
+            # IconLocation 指向我们的蓝底白字图标，使快捷方式显示项目 icon 而非默认图标
             ps = (
                 "$ws = New-Object -ComObject WScript.Shell; "
                 "$sc = $ws.CreateShortcut('%s'); "
                 "$sc.TargetPath = '%s'; "
-                "$sc.Arguments = '%s'; "
                 "$sc.WorkingDirectory = '%s'; "
                 "$sc.WindowStyle = 7; "
                 "$sc.IconLocation = '%s,0'; "
                 "$sc.Description = 'clinWatch 临床研究数据看板'; "
                 "$sc.Save()"
             ) % (SHORTCUT_PATH,
-                  os.path.join(BASE_DIR, ".venv", "Scripts", "pythonw.exe"),
-                  os.path.join(BASE_DIR, "tray.py"),
+                  os.path.join(BASE_DIR, "startWatch.vbs"),
                   BASE_DIR,
                   ICON_CACHE)
             subprocess.run(["powershell", "-NoProfile", "-Command", ps],
