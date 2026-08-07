@@ -20,26 +20,29 @@ const Calendar = {
     currentTab: 'calendar',
     // 事件过滤状态
     eventFilters: {
-        drug: true, assessment: true, ae: true, pk: true, status: true
+        drug: true, assessment: true, ae: true, pk: true, status: true,
+        next_drug: true, next_assessment: true
     },
 
     // 颜色映射
     typeColors: {
-        drug: { bg: '#378ADD', light: '#e8f2fd', label: '用药' },
-        assessment: { bg: '#639922', light: '#edf5e0', label: '疗评' },
-        ae: { bg: '#D85A30', light: '#fef0eb', label: 'AE' },
-        pk: { bg: '#7F77DD', light: '#f0eeff', label: 'PK' },
-        multi: { bg: '#BA7517', light: '#fef6e8', label: '多事件' }
+        drug: { bg: '#378ADD', light: '#e8f2fd', label: '用药', shape: 'circle' },
+        assessment: { bg: '#639922', light: '#edf5e0', label: '疗评', shape: 'diamond' },
+        ae: { bg: '#D85A30', light: '#fef0eb', label: 'AE', shape: 'triangle' },
+        pk: { bg: '#7F77DD', light: '#f0eeff', label: 'PK', shape: 'square' },
+        multi: { bg: '#BA7517', light: '#fef6e8', label: '多事件', shape: 'badge' },
+        next_drug: { bg: '#93C5FD', light: '#eff6ff', label: '下次用药', dashed: true, shape: 'circle' },
+        next_assessment: { bg: '#A3E635', light: '#f7fee7', label: '下次肿评', dashed: true, shape: 'diamond' }
     },
     aeGradeColors: { 1: '#fdba74', 2: '#fb923c', 3: '#f97316', 4: '#ea580c', 5: '#b91c1c' },
-    assessColors: { CR: '#22c55e', PR: '#639922', SD: '#fbbf24', PD: '#D85A30', NE: '#9ca3af' },
+    assessColors: { CR: '#22c55e', PR: '#639922', SD: '#facc15', PD: '#D85A30', NE: '#9ca3af' },
 
     /** 初始化 */
     async init() {
         await this.loadProjects();
         this.bindEvents();
         const savedTab = localStorage.getItem('ct-active-tab');
-        const validTabs = ['calendar', 'baseline', 'waterfall', 'swimmer', 'spider', 'tumorMarker', 'config'];
+        const validTabs = ['calendar', 'baseline', 'waterfall', 'swimmer', 'spider', 'tumorMarker', 'ae', 'config'];
         const tabToRestore = (savedTab && validTabs.includes(savedTab)) ? savedTab : 'calendar';
         if (this.projects && this.projects.length > 0) {
             // 优先从 localStorage 恢复上次选中的项目
@@ -179,6 +182,7 @@ const Calendar = {
             case 'swimmer': await Charts.loadSwimmer(); break;
             case 'spider': await Charts.loadSpider(); break;
             case 'tumorMarker': await Charts.loadTumorMarkerTrend(); break;
+            case 'ae': await AE.loadAE(); break;
             case 'config': await ConfigPanel.load(); break;
         }
     },
@@ -312,7 +316,9 @@ const Calendar = {
             dateList.push(yy + '-' + mm + '-' + dd);
         }
 
-        const today = new Date().toISOString().slice(0, 10);
+        // 使用本地日期计算 today，避免 toISOString() 的 UTC 偏移导致日期-1
+        const now = new Date();
+        const today = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
         const todayIdx = dateList.indexOf(today);
         const cw = this.colWidth;  // 当前列宽
         const showWeekday = cw >= 60;  // 列宽>=60px时显示星期（原阈值30的2倍）
@@ -394,6 +400,9 @@ const Calendar = {
             const pDltObservation = (p.dlt_observation === undefined || p.dlt_observation === null) ? true : !!p.dlt_observation;
             const dltStart = (firstActualDrugIdx >= 0 && pDltObservation) ? firstActualDrugIdx : -1;
             const dltEnd = dltStart >= 0 ? dltStart + dltDays - 1 : -1;
+            // 治疗结束时间和死亡/失访时间
+            const endTreatDate = p.end_treatment_date || '';
+            const deathLostDate = p.death_lost_date || '';
 
             html += '<tr class="patient-row" data-patient-id="' + p.id + '" data-first-drug="' + firstActualDrugIdx + '" data-last-drug="' + drugFillEndIdx + '" data-dose-color="' + (doseColor || '#378ADD') + '">';
             html += '<td class="col-fixed">';
@@ -413,30 +422,45 @@ const Calendar = {
                 const events = this.getEventsForDay(p.id, dateStr);
                 let cls = 'day-cell';
                 if (isWeekend) cls += ' weekend-col';
-                // DLT红色优先于用药绿色
+                // DLT红色优先于用药绿色；小方块标记在下方单独处理
                 if (isDLT) cls += ' dlt-period';
                 else if (isDrugPeriod) cls += ' drug-period';
                 let cellStyle = 'width:' + cw + 'px;max-width:' + cw + 'px;overflow:hidden;';
                 if (isToday) cellStyle += 'position:relative;';
                 html += '<td class="' + cls + '" style="' + cellStyle + '" onclick="SlidePanel.open(' + p.id + ')">';
+                // 治疗结束和死亡/失访小方块标记（彩色方块显示在单元格左上角）
+                if (dateStr === endTreatDate) html += '<span class="marker-square end-treat-marker"></span>';
+                if (dateStr === deathLostDate) html += '<span class="marker-square death-lost-marker"></span>';
                 if (events.length > 0) {
                     if (cw < 60) {
-                        // 窄列：只显示色点
+                        // 窄列：只显示色点（按类型用不同形状区分，避免撞色）
                         if (events.length <= 3) {
                             html += '<div class="event-dots-row">';
                             events.forEach(e => {
-                                html += '<span class="event-dot" style="background:' + this.getEventColor(e) + '" title="' + this.escapeHtml(e.label) + '"></span>';
+                                const tc = this.typeColors[e.type] || {};
+                                const shape = tc.shape || 'circle';
+                                html += '<span class="event-dot shape-' + shape + '" style="background:' + this.getEventColor(e) + '" title="' + this.escapeHtml(e.label) + '"></span>';
                             });
                             html += '</div>';
                         } else {
+                            // 多事件：显示数量徽标，避免折叠成误导性颜色
                             html += '<div class="event-dots-row">';
-                            html += '<span class="event-dot" style="background:' + this.typeColors.multi.bg + '"></span>';
+                            html += '<span class="event-count-badge" title="' + events.length + ' 个事件，点击查看详情">' + events.length + '</span>';
                             html += '</div>';
                         }
                     } else {
                         // 宽列：显示事件卡片
                         events.forEach(e => {
-                            html += '<div class="event-card ' + e.type + '" title="' + this.escapeHtml(e.detail || e.label) + '">' + this.escapeHtml(e.label) + '</div>';
+                            const tc = this.typeColors[e.type] || {};
+                            let cardStyle = tc.dashed ? 'opacity:0.65;' : '';
+                            // AE 按等级着色，与窄列圆点保持一致（修复宽列深红橙幽灵色）
+                            if (e.type === 'ae' && e.grade) {
+                                const bg = this.aeGradeColors[e.grade] || this.typeColors.ae.bg;
+                                cardStyle += 'background:' + bg + ';';
+                                // 浅色等级(G1/G2)用深色文字保证可读
+                                if (e.grade <= 2) cardStyle += 'color:#7c2d12;';
+                            }
+                            html += '<div class="event-card ' + e.type + '" style="' + cardStyle + '" title="' + this.escapeHtml(e.detail || e.label) + '">' + this.escapeHtml(e.label) + '</div>';
                         });
                     }
                 }
@@ -561,11 +585,20 @@ const Calendar = {
         if (typeof Charts !== 'undefined' && Charts.ensureECharts) {
             return Charts.ensureECharts();
         }
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
             if (window.echarts) { resolve(); return; }
+            // 优先本地加载，失败后CDN兜底
+            const tryCDN = () => {
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js';
+                script.onload = () => resolve();
+                script.onerror = () => { console.error('ECharts CDN加载失败'); reject(new Error('ECharts加载失败')); };
+                document.head.appendChild(script);
+            };
             const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js';
+            script.src = '/js/lib/echarts.min.js';  // 本地优先
             script.onload = () => resolve();
+            script.onerror = () => { console.warn('本地ECharts加载失败，回退到CDN'); tryCDN(); };
             document.head.appendChild(script);
         });
     },

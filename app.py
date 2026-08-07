@@ -207,6 +207,12 @@ def api_get_adverse_events(pid):
     rows = database.get_adverse_events(pid)
     return jsonify(rows)
 
+@app.route('/api/projects/<int:pid>/adverse-events', methods=['GET'])
+def api_get_project_adverse_events(pid):
+    """项目级 AE 汇总：返回该项目下全部不良事件（含患者编号）"""
+    rows = database.get_project_adverse_events(pid)
+    return jsonify(rows)
+
 @app.route('/api/patients/<int:pid>/adverse-events', methods=['POST'])
 def api_create_adverse_event(pid):
     data = request.get_json()
@@ -383,12 +389,22 @@ def api_get_gantt_full():
         app.logger.warning(f"获取剂量组失败: {e}")
         # 失败后继续使用空映射，不阻断主流程
 
-    # 获取 DLT 观察期天数
+    # 获取 DLT 观察期天数及周期间隔
     dlt_days = 21
+    med_interval = 21
+    assess_interval = 42
+    assess_calc_base = 'baseline'
     try:
         proj_info = database.get_project(project_id)
-        if proj_info and proj_info.get('dlt_days') is not None:
-            dlt_days = int(proj_info['dlt_days'])
+        if proj_info:
+            if proj_info.get('dlt_days') is not None:
+                dlt_days = int(proj_info['dlt_days'])
+            if proj_info.get('medication_interval') is not None:
+                med_interval = int(proj_info['medication_interval'])
+            if proj_info.get('assessment_interval') is not None:
+                assess_interval = int(proj_info['assessment_interval'])
+            if proj_info.get('assessment_calc_base'):
+                assess_calc_base = proj_info['assessment_calc_base']
     except Exception as e:
         app.logger.warning(f"获取项目信息失败: {e}")
 
@@ -404,7 +420,10 @@ def api_get_gantt_full():
             'month_labels': month_labels
         },
         'dose_colors': dose_colors,
-        'dlt_days': dlt_days
+        'dlt_days': dlt_days,
+        'medication_interval': med_interval,
+        'assessment_interval': assess_interval,
+        'assessment_calc_base': assess_calc_base
     })
 
 @app.route('/api/gantt', methods=['GET'])
@@ -983,7 +1002,7 @@ def api_chart_swimmer(project_id):
         patient_status = p.get('status', 'treatment')
         today = datetime.now().strftime('%Y-%m-%d')
         enroll_date = p.get('enroll_date')
-        off_study_date = p.get('off_study_date')
+        death_lost_date = p.get('death_lost_date')
 
         # 获取用药日期
         drug_dates = []
@@ -991,11 +1010,16 @@ def api_chart_swimmer(project_id):
             if m.get('actual_date'):
                 drug_dates.append(m['actual_date'])
 
+        end_treatment_date = p.get('end_treatment_date')
         if drug_dates:
             first_drug_date = min(drug_dates)
             last_drug_date = max(drug_dates)
-            # 治疗用药天数：从首次到末次实际用药
-            days = (datetime.strptime(last_drug_date, '%Y-%m-%d') - datetime.strptime(first_drug_date, '%Y-%m-%d')).days
+            # 治疗用药天数：首次用药 → 治疗结束时间（非在组治疗时）或今天（在组治疗时）
+            if patient_status == 'treatment':
+                drug_end = today
+            else:
+                drug_end = end_treatment_date or last_drug_date or today
+            days = (datetime.strptime(drug_end, '%Y-%m-%d') - datetime.strptime(first_drug_date, '%Y-%m-%d')).days
         else:
             first_drug_date = ''
             last_drug_date = ''
@@ -1007,7 +1031,7 @@ def api_chart_swimmer(project_id):
         # 研究状态天数（从入组到终点事件/今天）
         if enroll_date:
             if patient_status == 'off_study':
-                study_end_date = off_study_date if off_study_date else (last_drug_date if last_drug_date else today)
+                study_end_date = death_lost_date if death_lost_date else (last_drug_date if last_drug_date else today)
             else:
                 study_end_date = today
             study_days = (datetime.strptime(study_end_date, '%Y-%m-%d') - datetime.strptime(enroll_date, '%Y-%m-%d')).days
@@ -1096,7 +1120,7 @@ def api_chart_swimmer(project_id):
             'end_date': last_drug_date,         # 末次实际用药日期
             'enroll_date': enroll_date,         # 入组日期
             'study_end_date': study_end_date,   # 研究终点日期
-            'off_study_date': off_study_date,   # 出组日期
+            'death_lost_date': death_lost_date,
             'is_extended': False,
             'first_drug_date': first_drug_date,
             'last_drug_date': last_drug_date,
@@ -1199,4 +1223,5 @@ if __name__ == '__main__':
     print("  临床研究数据看板")
     print("  访问地址: http://localhost:5000")
     print("=" * 50)
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # debug=False 关闭 reloader：避免子进程重复、退出不干净（托盘模式下必需）
+    app.run(debug=False, host='0.0.0.0', port=5000)

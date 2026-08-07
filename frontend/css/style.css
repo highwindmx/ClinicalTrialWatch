@@ -423,8 +423,19 @@ body {
 
 /* 事件单元格 */
 .day-cell { position: relative; padding: 2px; cursor: pointer; white-space: nowrap; overflow: hidden; }
-.event-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin: 1px; }
+.event-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin: 1px; }
 .event-dots-row { display: flex; align-items: center; justify-content: center; gap: 1px; flex-wrap: wrap; }
+/* 按事件类型用不同形状区分（解决纯颜色撞色问题） */
+.event-dot.shape-diamond { border-radius: 0; clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.event-dot.shape-triangle { border-radius: 0; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.event-dot.shape-square { border-radius: 1px; }
+/* 多事件数量徽标：明确表示"当天 N 个事件"，不伪装成某等级颜色 */
+.event-count-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 14px; height: 12px; padding: 0 3px; margin: 1px;
+    background: #374151; color: #fff;
+    border-radius: 6px; font-size: 9px; font-weight: 600; line-height: 1;
+}
 .event-card {
     padding: 1px 4px;
     border-radius: 3px;
@@ -440,6 +451,17 @@ body {
 .event-card.assessment { background: var(--assess-color); }
 .event-card.ae { background: var(--ae-color); }
 .event-card.pk { background: var(--pk-color); }
+/* 预测事件：虚线边框 + 透明填充，与真实事件区分 */
+.event-card.next_drug {
+    background: transparent;
+    border: 1.5px dashed #93C5FD;
+    color: #93C5FD;
+}
+.event-card.next_assessment {
+    background: transparent;
+    border: 1.5px dashed #A3E635;
+    color: #A3E635;
+}
 
 /* Hover面板 */
 .hover-panel {
@@ -497,8 +519,8 @@ body {
 .slide-panel {
     position: fixed;
     top: 0; right: 0; bottom: 0;
-    width: 600px;
-    max-width: 90vw;
+    width: 1200px;
+    max-width: 95vw;
     background: var(--card-bg);
     z-index: var(--z-slide-panel);
     display: flex;
@@ -794,6 +816,22 @@ body {
 /* 用药期间格染色（浅绿背景） */
 .day-cell.drug-period { background: #ecfdf5 !important; }
 .gantt-table tbody tr:hover .day-cell.drug-period { background: #d1fae5 !important; }
+/* 治疗结束和死亡/失访小方块标记（显示在单元格左上角） */
+.day-cell .marker-square {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+    position: absolute;
+    top: 2px;
+    left: 2px;
+}
+.day-cell .end-treat-marker { background: #f97316; }
+.day-cell .death-lost-marker { background: #6b7280; }
+/* 治疗结束时间标记（橙色边框，优先级低于DLT和用药期） */
+/* 已改为单元格内小方块，上方 marker-square 样式替代 */
+/* 死亡/失访时间标记（深灰边框，优先级最低） */
+/* 已改为单元格内小方块，上方 marker-square 样式替代 */
 /* DLT覆盖用药期：DLT优先级更高，已在上面用!important保证 */
 
 /* 入组按钮 */
@@ -823,6 +861,7 @@ body {
 
 /* 周末标记 */
 .weekend-col { background: #fafafa; }
+.gantt-table thead th.weekend { background: #dbeafe; }
 
 /* ==================== Toast 通知 ==================== */
 .toast-container {
@@ -892,3 +931,62 @@ body {
 .toast-close:hover {
     opacity: 1;
 }
+
+/* ==================== AE 汇总页面 ==================== */
+.ae-toolbar {
+    background: var(--card-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.ae-scroll {
+    flex: 1;
+    overflow: auto;
+    padding: 16px;
+    background: var(--bg);
+}
+.ae-section { margin-bottom: 24px; }
+.ae-section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0 0 10px;
+    padding-left: 8px;
+    border-left: 3px solid var(--primary, #378ADD);
+}
+.ae-table-wrap { overflow-x: auto; }
+
+/* 等级徽标 */
+.grade-badge {
+    display: inline-block;
+    min-width: 30px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: center;
+    line-height: 1.5;
+}
+/* 严重 AE 标记 */
+.badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.6;
+}
+.badge-sae {
+    background: #fee2e2;
+    color: #b91c1c;
+    border: 1px solid #fca5a5;
+}
+/* 透视表数值单元格居中 */
+.ae-pivot .ae-num { text-align: center; font-variant-numeric: tabular-nums; }
+.ae-pivot th:not(:first-child) { text-align: center; }
+/* 合计行 */
+.ae-total-row { background: #f8f9fb; }
+.ae-total-row td { border-top: 2px solid var(--border); }

@@ -35,6 +35,7 @@
             <button class="main-tab" data-tab="waterfall">瀑布图</button>
             <button class="main-tab" data-tab="spider">蜘蛛图</button>
             <button class="main-tab" data-tab="tumorMarker">肿瘤指标</button>
+            <button class="main-tab" data-tab="ae">AE汇总</button>
             <!-- 项目配置Tab入口已移至左上角⚙按钮，此处隐藏 -->
             <button class="main-tab" data-tab="config" style="display:none">项目配置</button>
         </div>
@@ -76,6 +77,8 @@
                 <label class="filter-chip"><input type="checkbox" checked data-filter="assessment"><span class="filter-color-dot" style="background:#639922"></span>疗评</label>
                 <label class="filter-chip"><input type="checkbox" checked data-filter="ae"><span class="filter-color-dot" style="background:#D85A30"></span>AE</label>
                 <label class="filter-chip"><input type="checkbox" checked data-filter="pk"><span class="filter-color-dot" style="background:#7F77DD"></span>PK</label>
+                <label class="filter-chip"><input type="checkbox" checked data-filter="next_drug"><span class="filter-color-dot" style="background:#93C5FD"></span>计划用药</label>
+                <label class="filter-chip"><input type="checkbox" checked data-filter="next_assessment"><span class="filter-color-dot" style="background:#A3E635"></span>预测影像</label>
             </div>
             <div style="flex:1"></div>
         </div>
@@ -179,8 +182,8 @@
             </select>
             <div style="width:1px;height:20px;background:#e5e7eb"></div>
             <label style="font-size:13px;font-weight:500">状态图偏移:</label>
-            <input type="number" id="swStatusOffset" value="3" min="0" max="50" step="1" style="width:50px;font-size:12px;padding:2px 4px;border:1px solid #d1d5db;border-radius:4px" title="患者状态图示距研究状态条形的偏移量(px)" onchange="Charts._onSwimmerControlChange()">
-            <span style="font-size:11px;color:#9ca3af">px</span>
+            <input type="number" id="swStatusOffset" value="20" min="1" max="100" step="1" style="width:50px;font-size:12px;padding:2px 4px;border:1px solid #d1d5db;border-radius:4px" title="患者状态图示距研究状态条形的偏移量（天数）" onchange="Charts._onSwimmerControlChange()">
+            <span style="font-size:11px;color:#9ca3af">天</span>
             <div style="width:1px;height:20px;background:#e5e7eb"></div>
             <span style="font-size:13px;font-weight:500">筛选剂量组:</span>
             <span id="swDoseFilters" style="display:flex;gap:8px;flex-wrap:wrap"></span>
@@ -203,6 +206,41 @@
             </select>
         </div>
         <div class="chart-panel"><div id="chartMarker" style="height:560px"></div></div>
+    </div>
+
+    <!-- ===== AE汇总Tab ===== -->
+    <div class="tab-panel" id="panel-ae">
+        <div class="ae-toolbar">
+            <input type="text" id="aeSearch" class="form-input" placeholder="搜索 AE 名称…" style="width:200px;font-size:13px">
+            <select id="aeGradeFilter" class="form-select" style="width:140px;font-size:13px;height:30px">
+                <option value="">全部等级</option>
+                <option value="1">1级</option>
+                <option value="2">2级</option>
+                <option value="3">3级</option>
+                <option value="4">4级</option>
+                <option value="5">5级</option>
+                <option value="ge3">仅 ≥3级（重度）</option>
+                <option value="sae">仅严重 AE (SAE)</option>
+            </select>
+            <select id="aeDoseGroupFilter" class="form-select" style="width:140px;font-size:13px;height:30px">
+                <option value="">全部剂量组</option>
+            </select>
+            <label style="font-size:13px;display:flex;align-items:center;gap:4px;cursor:pointer">
+                <input type="checkbox" id="aeSeriousOnly"> 仅严重
+            </label>
+            <div style="flex:1"></div>
+            <span id="aeCount" style="font-size:13px;color:#6b7280"></span>
+        </div>
+        <div class="ae-scroll">
+            <section class="ae-section">
+                <h3 class="ae-section-title">AE 明细列表</h3>
+                <div id="aeListTable" class="ae-table-wrap"></div>
+            </section>
+            <section class="ae-section">
+                <h3 class="ae-section-title">AE 名称 × 等级 交叉表</h3>
+                <div id="aePivotTable" class="ae-table-wrap"></div>
+            </section>
+        </div>
     </div>
 
     <!-- ===== 项目配置Tab ===== -->
@@ -238,10 +276,26 @@
                     <span id="dltSaveMsg" style="font-size:12px;color:#22c55e;display:none">✓ 已保存</span>
                 </div>
             </div>
+            <!-- 预计下次影像计算方式 -->
+            <div class="config-section">
+                <h3>预计下次影像计算方式</h3>
+                <div style="display:flex;align-items:center;gap:10px;padding:4px 0;flex-wrap:wrap">
+                    <label style="font-size:13px;color:#374151">计算基准:</label>
+                    <select id="assessmentCalcBase" class="form-select" style="width:200px;font-size:13px;height:30px" onchange="ConfigPanel.saveAssessmentCalcBase(this.value)">
+                        <option value="baseline">基于基线影像时间</option>
+                        <option value="enroll">基于入组日期</option>
+                    </select>
+                    <span id="calcBaseSaveMsg" style="font-size:12px;color:#22c55e;display:none">✓ 已保存</span>
+                </div>
+                <p style="font-size:12px;color:#6b7280;margin-top:6px;line-height:1.5">
+                    <b>基于基线影像时间</b>：上次影像日期 + 肿评间隔天数（沿用既往逻辑）<br>
+                    <b>基于入组日期</b>：入组日期 + 肿评间隔天数 × 已完成评估次数
+                </p>
+            </div>
             <div class="config-section">
                 <h3>剂量组管理 <button class="btn btn-sm" id="addDoseGroupBtn">+ 新增</button></h3>
                 <table class="config-table" id="doseGroupTable">
-                    <thead><tr><th>名称</th><th>颜色</th><th>排序</th><th>操作</th></tr></thead>
+                    <thead><tr><th>名称</th><th>颜色</th><th>用药间隔(天)</th><th>肿评间隔(天)</th><th>排序</th><th>操作</th></tr></thead>
                     <tbody id="doseGroupBody"></tbody>
                 </table>
             </div>
@@ -284,7 +338,7 @@
         <div class="slide-tab-content" id="stab-medication">
             <div class="sp-section">
                 <div class="sp-section-header"><h4>用药记录</h4><button class="btn btn-sm" onclick="SlidePanel.addMedication()">+ 添加</button></div>
-                <div style="overflow-x:auto"><table class="sp-table"><thead><tr><th>药物</th><th>计划日期</th><th>实际日期</th><th>剂量</th><th>周期</th><th>操作</th></tr></thead><tbody id="spMedBody"></tbody></table></div>
+                <div style="overflow-x:auto"><table class="sp-table"><thead><tr><th>药物</th><th>实际日期</th><th>剂量</th><th>周期</th><th>操作</th></tr></thead><tbody id="spMedBody"></tbody></table></div>
             </div>
         </div>
         <div class="slide-tab-content" id="stab-assessment">
@@ -296,7 +350,7 @@
         <div class="slide-tab-content" id="stab-ae">
             <div class="sp-section">
                 <div class="sp-section-header"><h4>不良事件</h4><button class="btn btn-sm" onclick="SlidePanel.addAE()">+ 添加</button></div>
-                <div style="overflow-x:auto"><table class="sp-table"><thead><tr><th>AE名称</th><th>发生</th><th>结束</th><th>等级</th><th>转归</th><th>关系</th><th>操作</th></tr></thead><tbody id="spAeBody"></tbody></table></div>
+                <div style="overflow-x:auto"><table class="sp-table"><thead><tr><th>AE名称</th><th>发生</th><th>结束</th><th>等级</th><th>严重(SAE)</th><th>转归</th><th>关系</th><th>操作</th></tr></thead><tbody id="spAeBody"></tbody></table></div>
             </div>
         </div>
         <div class="slide-tab-content" id="stab-pk">
@@ -377,6 +431,7 @@
 <script src="/js/api.js"></script>
 <script src="/js/utils.js"></script>
 <script src="/js/charts.js"></script>
+<script src="/js/ae.js"></script>
 <script src="/js/calendar.js"></script>
 <script src="/js/slidepanel.js"></script>
 <script src="/js/config.js"></script>

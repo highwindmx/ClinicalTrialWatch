@@ -22,6 +22,12 @@ const SlidePanel = {
         { value: 'off_study', label: '死亡/失访' }
     ],
 
+    /** 获取本地日期字符串 YYYY-MM-DD，避免 toISOString 的 UTC 偏移问题 */
+    getLocalDateStr() {
+        const d = new Date();
+        return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+    },
+
     /** 打开面板 */
     async open(pid) {
         this.patientId = pid;
@@ -98,6 +104,8 @@ const SlidePanel = {
     renderBaseline() {
         const p = this.patient;
         const grid = document.getElementById('spBaseline');
+        const statusMap = { 'treatment': '在组治疗中', 'followup': '结束治疗随访中', 'off_study': '死亡/失访' };
+        const statusLabel = statusMap[p.status] || '-';
         const fields = [
             { key: 'patient_id', label: '患者编号', value: p.patient_id, type: 'text' },
             { key: 'age', label: '年龄', value: p.age, type: 'number' },
@@ -106,25 +114,24 @@ const SlidePanel = {
             { key: 'ecog_score', label: 'ECOG评分', value: p.ecog_score, type: 'select', options: ['0','1','2','3','4'] },
             { key: 'dose_group_id', label: '剂量组', value: p.dose_group_id, type: 'config_select', options: this._doseGroups },
             { key: 'enroll_date', label: '入组日期', value: p.enroll_date, type: 'date' },
-            { key: 'dlt_observation', label: '进行DLT观察？', value: p.dlt_observation, type: 'checkbox', checkboxLabel: '是' },
-            { key: 'status', label: '状态', value: p.status, type: 'status_select' },
-            { key: 'off_study_date', label: '出组日期', value: p.off_study_date, type: 'date' },
+            { key: 'end_treatment_date', label: '治疗结束日期', value: p.end_treatment_date, type: 'date' },
+            { key: 'death_lost_date', label: '死亡/失访日期', value: p.death_lost_date, type: 'date' },
+			{ key: 'status', label: '状态', value: p.status, type: 'readonly', text: statusLabel },
+			{ key: 'dlt_observation', label: '进行DLT观察？', value: p.dlt_observation, type: 'checkbox', checkboxLabel: '是' },
         ];
         grid.innerHTML = '<div class="sp-baseline-grid">' +
             fields.map(f => {
                 let input;
-                if (f.type === 'checkbox') {
+                if (f.type === 'readonly') {
+                    // 只读展示：显示中文标签，不提供编辑
+                    input = '<span class="readonly-field" style="font-size:13px;color:#374151;padding:4px 0;display:inline-block">' +
+                        escapeHtml(f.text || '-') + '</span>';
+                } else if (f.type === 'checkbox') {
                     const checked = f.value !== 0 && f.value !== '0' && f.value !== null && f.value !== undefined;
                     input = '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">' +
                         '<input type="checkbox" id="sp_' + f.key + '" ' + (checked ? 'checked' : '') +
                         ' onchange="SlidePanel.onBaselineChange(\'' + f.key + '\',this.checked?1:0,this)">' +
                         (f.checkboxLabel || '') + '</label>';
-                } else if (f.type === 'status_select') {
-                    // 状态：显示中文标签，存英文值
-                    input = '<select id="sp_status" class="form-input" onchange="SlidePanel.onStatusChange(this)">' +
-                        '<option value="">--</option>' +
-                        this.statusOptions.map(o => '<option value="' + o.value + '" ' + (f.value === o.value ? 'selected' : '') + '>' + o.label + '</option>').join('') +
-                        '</select>';
                 } else if (f.type === 'config_select') {
                     // 从项目配置加载的下拉选项（value=ID, label=name）
                     input = '<select id="sp_' + f.key + '" class="form-input" onchange="SlidePanel.onBaselineChange(\'' + f.key + '\',this.value,this)">' +
@@ -137,21 +144,10 @@ const SlidePanel = {
                 } else {
                     input = '<input type="' + f.type + '" id="sp_' + f.key + '" class="form-input" value="' + escapeHtml(f.value || '') + '" onchange="SlidePanel.onBaselineChange(\'' + f.key + '\',this.value,this)">';
                 }
-                const isOffStudyDate = f.key === 'off_study_date';
-                const hiddenStyle = isOffStudyDate && p.status !== 'off_study' ? 'display:none' : '';
-                return '<div class="sp-field" id="sp_field_' + f.key + '" style="' + hiddenStyle + '"><label>' + f.label + '</label>' + input + '</div>';
+                return '<div class="sp-field" id="sp_field_' + f.key + '"><label>' + f.label + '</label>' + input + '</div>';
             }).join('') +
             '</div>' +
             '<div style="margin-top:8px;font-size:11px;color:#6b7280;text-align:right">✓ 修改即时保存</div>';
-    },
-
-    /** 状态变更时显示/隐藏出组日期 */
-    onStatusChange(el) {
-        this.onBaselineChange('status', el.value, el);
-        const offStudyField = document.getElementById('sp_field_off_study_date');
-        if (offStudyField) {
-            offStudyField.style.display = el.value === 'off_study' ? '' : 'none';
-        }
     },
 
     /** 基线字段即时保存 */
@@ -192,12 +188,11 @@ const SlidePanel = {
         }
     },
 
-    // ============ 用药（周期改文字，剂量+单位合并） ============
+    // ============ 用药 ============
     renderMedications() {
         const body = document.getElementById('spMedBody');
         body.innerHTML = this.medications.map(m => '<tr>' +
             '<td><input class="inline-edit" value="' + escapeHtml(m.drug_name||'') + '" onchange="SlidePanel.updateMed(' + m.id + ',\'drug_name\',this.value,this)"></td>' +
-            '<td><input class="inline-edit" type="date" value="' + escapeHtml(m.planned_date||'') + '" onchange="SlidePanel.updateMed(' + m.id + ',\'planned_date\',this.value,this)"></td>' +
             '<td><input class="inline-edit" type="date" value="' + escapeHtml(m.actual_date||'') + '" onchange="SlidePanel.updateMed(' + m.id + ',\'actual_date\',this.value,this)"></td>' +
             '<td><input class="inline-edit" value="' + escapeHtml(m.dose||'') + '" onchange="SlidePanel.updateMedDose(' + m.id + ',this.value,this)" placeholder="如200mg" style="width:80px"></td>' +
             '<td><input class="inline-edit" value="' + escapeHtml(m.cycle||'') + '" onchange="SlidePanel.updateMed(' + m.id + ',\'cycle\',this.value,this)" placeholder="C1D1" style="width:60px"></td>' +
@@ -319,7 +314,7 @@ const SlidePanel = {
     async addAssessment() {
         // 新增评估：如果还没有基线评估，标记为基线；否则自动标记V1/V2/V3
         const isFirst = this.assessments.length === 0;
-        const defaultData = { eval_date: new Date().toISOString().slice(0, 10) };
+        const defaultData = { eval_date: this.getLocalDateStr() };
         if (isFirst) {
             defaultData.eval_type = '基线';
             defaultData.sod_change = 0;
@@ -351,6 +346,12 @@ const SlidePanel = {
             '<td><select class="inline-edit" onchange="SlidePanel.updateAE(' + a.id + ',\'grade\',this.value,this)">' +
                 [1,2,3,4,5].map(g => '<option value="' + g + '" ' + (a.grade==g?'selected':'') + '>' + g + '</option>').join('') +
             '</select></td>' +
+            '<td style="text-align:center">' +
+                '<label style="display:inline-flex;align-items:center;gap:3px;font-size:12px;cursor:pointer">' +
+                '<input type="checkbox" ' + (a.serious ? 'checked' : '') + ' onchange="SlidePanel.updateAE(' + a.id + ',\'serious\',this.checked?1:0,this)">' +
+                (a.serious ? '<span style="color:#b91c1c;font-weight:600">是</span>' : '<span style="color:#9ca3af">否</span>') +
+                '</label>' +
+            '</td>' +
             '<td><select class="inline-edit" onchange="SlidePanel.updateAE(' + a.id + ',\'outcome\',this.value)"><option value="">--</option>' +
                 ['恢复','恢复伴后遗症','持续','死亡','未知'].map(o => '<option value="' + o + '" ' + (a.outcome===o?'selected':'') + '>' + o + '</option>').join('') +
             '</select></td>' +
@@ -361,13 +362,21 @@ const SlidePanel = {
             '</tr>').join('');
     },
     async addAE() {
-        await api.createAdverseEvent(this.patientId, { ae_term: '新AE', onset_date: new Date().toISOString().slice(0,10), grade: 1 });
+        await api.createAdverseEvent(this.patientId, { ae_term: '新AE', onset_date: this.getLocalDateStr(), grade: 1, serious: 0 });
         this.aes = await api.getAdverseEvents(this.patientId);
         this.renderAEs();
     },
     async updateAE(id, field, value, el) {
         await api.updateAdverseEvent(id, { [field]: value });
-        this._saveHint(el);
+        if (field === 'serious') {
+            // 勾选框旁的"是/否"文字依赖重新渲染，需拉取最新数据并重绘
+            this.aes = await api.getAdverseEvents(this.patientId);
+            this.renderAEs();
+        } else {
+            const item = this.aes.find(x => x.id === id);
+            if (item) item[field] = value;
+            this._saveHint(el);
+        }
     },
     async deleteAE(id) {
         if (!confirm('确定删除此不良事件？')) return;
@@ -389,7 +398,7 @@ const SlidePanel = {
             '</tr>').join('');
     },
     async addPK() {
-        await api.createPkData(this.patientId, { sample_date: new Date().toISOString().slice(0,10) });
+        await api.createPkData(this.patientId, { sample_date: this.getLocalDateStr() });
         this.pkData = await api.getPkData(this.patientId);
         this.renderPK();
     },
@@ -417,7 +426,7 @@ const SlidePanel = {
             '</tr>').join('');
     },
     async addMarker() {
-        await api.createTumorMarker(this.patientId, { test_date: new Date().toISOString().slice(0,10), marker_name: 'CEA' });
+        await api.createTumorMarker(this.patientId, { test_date: this.getLocalDateStr(), marker_name: 'CEA' });
         this.markers = await api.getTumorMarkers(this.patientId);
         this.renderMarkers();
     },

@@ -25,6 +25,8 @@ const ConfigPanel = {
             if (codeInput) codeInput.value = projectData.code || '';
             const dltInput = document.getElementById('dltDaysInput');
             if (dltInput) dltInput.value = projectData.dlt_days ?? 21;
+            const calcBaseSelect = document.getElementById('assessmentCalcBase');
+            if (calcBaseSelect) calcBaseSelect.value = projectData.assessment_calc_base || 'baseline';
         }
         this.renderDoseGroups();
         this.renderCancerTypes();
@@ -65,12 +67,23 @@ const ConfigPanel = {
         Calendar.refresh();
     },
 
+    // ============ 预计下次影像计算方式 ============
+    async saveAssessmentCalcBase(value) {
+        await api.updateProject(Calendar.currentProject, { assessment_calc_base: value });
+        // 提示
+        const msg = document.getElementById('calcBaseSaveMsg');
+        if (msg) { msg.style.display = 'inline'; setTimeout(() => msg.style.display = 'none', 2000); }
+        // 刷新日历
+        Calendar.refresh();
+    },
+
     // ============ 剂量组 ============
     renderDoseGroups() {
         const body = document.getElementById('doseGroupBody');
+        if (!body) { console.warn('renderDoseGroups: doseGroupBody not found in DOM'); return; }
         const len = this.doseGroups.length;
         if (len === 0) {
-            body.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#6b7280;padding:20px">暂无剂量组，请添加</td></tr>';
+            body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#6b7280;padding:20px">暂无剂量组，请添加</td></tr>';
             return;
         }
         body.innerHTML = this.doseGroups.map((dg, i) => {
@@ -88,6 +101,8 @@ const ConfigPanel = {
             return '<tr>' +
                 '<td><input class="inline-edit" value="' + this.esc(dg.name) + '" onchange="ConfigPanel.updateDoseGroup(' + dg.id + ',\'name\',this.value)"></td>' +
                 '<td><input type="color" value="' + (dg.color || '#378ADD') + '" onchange="ConfigPanel.updateDoseGroup(' + dg.id + ',\'color\',this.value)" style="width:36px;height:24px;border:1px solid #ddd;border-radius:3px;cursor:pointer"></td>' +
+                '<td><input type="number" value="' + (dg.medication_interval ?? '') + '" placeholder="天" min="1" max="365" style="width:60px;font-size:12px;padding:2px 4px;border:1px solid #d1d5db;border-radius:4px" onchange="ConfigPanel.updateDoseGroup(' + dg.id + ',\'medication_interval\',this.value?parseInt(this.value):null)"></td>' +
+                '<td><input type="number" value="' + (dg.assessment_interval ?? '') + '" placeholder="天" min="7" max="365" style="width:60px;font-size:12px;padding:2px 4px;border:1px solid #d1d5db;border-radius:4px" onchange="ConfigPanel.updateDoseGroup(' + dg.id + ',\'assessment_interval\',this.value?parseInt(this.value):null)"></td>' +
                 '<td class="sort-arrow-cell">' + arrows + '</td>' +
                 '<td><button class="btn btn-sm" onclick="ConfigPanel.deleteDoseGroup(' + dg.id + ')" style="color:#D85A30">删除</button></td>' +
                 '</tr>';
@@ -135,6 +150,7 @@ const ConfigPanel = {
     // ============ 癌肿类型 ============
     renderCancerTypes() {
         const body = document.getElementById('cancerTypeBody');
+        if (!body) { console.warn('renderCancerTypes: cancerTypeBody not found in DOM'); return; }
         const len = this.cancerTypes.length;
         if (len === 0) {
             body.innerHTML = '<tr><td colspan="3" style="text-align:center;color:#6b7280;padding:20px">暂无癌肿类型，请添加</td></tr>';

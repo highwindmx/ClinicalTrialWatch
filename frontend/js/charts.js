@@ -109,6 +109,21 @@ const Charts = {
 
     async ensureECharts() {
         if (window.echarts) { this.echarts = window.echarts; return; }
+        // 优先本地加载
+        const tryLocal = () => new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = '/js/lib/echarts.min.js';
+            script.onload = resolve;
+            script.onerror = reject;
+            document.head.appendChild(script);
+        });
+        try {
+            await tryLocal();
+            if (window.echarts) { this.echarts = window.echarts; return; }
+        } catch(e) {
+            console.warn('本地ECharts加载失败，回退到CDN', e);
+        }
+        // 本地失败，尝试CDN列表
         const cdnUrls = [
             'https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js',
             'https://cdn.bootcdn.net/ajax/libs/echarts/5.5.0/echarts.min.js',
@@ -132,7 +147,7 @@ const Charts = {
                 console.warn('ECharts CDN加载失败:', url, e);
             }
         }
-        console.error('所有ECharts CDN均加载失败');
+        console.error('所有ECharts来源均加载失败（本地 + 所有CDN）');
     },
 
     median(arr) {
@@ -347,7 +362,7 @@ const Charts = {
             return colorMap[d.best_response] || '#9ca3af';
         };
 
-        const statusSymbols = { '在组治疗中': 'path://M0,0 L10,5 L0,10 Z', '结束治疗随访中': 'circle', '死亡/失访': 'path://M2,2 L10,10 M10,2 L2,10' };
+        const statusSymbols = { '在组治疗中': 'path://M0,0 L10,5 L0,10 Z', '结束治疗随访中': 'circle', '死亡/失访': 'path://M0,2 L2,0 L5,3 L8,0 L10,2 L7,5 L10,8 L8,10 L5,7 L2,10 L0,8 L3,5 Z' };
         const statusColors = this.statusColors;
 
         const sodValues = data.map(d => d.sod_change);
@@ -671,7 +686,7 @@ const Charts = {
         });
 
         // 可配置的状态图示偏移量（默认3px）
-        const statusOffset = parseInt(document.getElementById('swStatusOffset')?.value) || 3;
+        const statusOffset = parseInt(document.getElementById('swStatusOffset')?.value) || 20;
 
         // 销毁旧图表
         if (this.state.swimmerChart) { this.state.swimmerChart.dispose(); this.state.swimmerChart = null; }
@@ -691,7 +706,7 @@ const Charts = {
 
         const responseColors = this.responseColors;
         const aeGradeColors = { 1: '#fdba74', 2: '#fb923c', 3: '#f97316', 4: '#ea580c', 5: '#b91c1c' };
-        const statusSymbols = { '在组治疗中': 'path://M0,0 L10,5 L0,10 Z', '结束治疗随访中': 'circle', '死亡/失访': 'path://M2,2 L10,10 M10,2 L2,10' };
+        const statusSymbols = { '在组治疗中': 'path://M0,0 L10,5 L0,10 Z', '结束治疗随访中': 'circle', '死亡/失访': 'path://M0,2 L2,0 L5,3 L8,0 L10,2 L7,5 L10,8 L8,10 L5,7 L2,10 L0,8 L3,5 Z' };
         const statusColors = this.statusColors;
 
         const barColorMode = this.state._swBarColor;
@@ -844,7 +859,7 @@ const Charts = {
                         if (!d) return '';
                         let tip = '<b>' + d.patient_id + '</b><br/>研究天数: ' + d.study_days + '天';
                         if (d.patient_status) tip += '<br/>状态: ' + d.patient_status;
-                        if (d.status_raw === 'off_study' && d.off_study_date) tip += '<br/>出组日期: ' + d.off_study_date;
+                        if (d.status_raw === 'off_study' && d.death_lost_date) tip += '<br/>死亡/失访日期: ' + d.death_lost_date;
                         if (d.enroll_date) tip += '<br/>入组日期: ' + d.enroll_date;
                         return tip;
                     }
@@ -853,7 +868,6 @@ const Charts = {
                     if (!d) return '';
                     if (params.seriesName === '治疗用药') {
                         let tip = '<b>' + d.patient_id + '</b><br/>治疗天数: ' + d.days + '天';
-                        tip += '<br/>入组第' + d.drug_start_offset + '天起';
                         if (d.patient_status) tip += '<br/>状态: ' + d.patient_status;
                         if (d.dose_group) tip += '<br/>剂量组: ' + d.dose_group;
                         if (d.cancer_type) tip += '<br/>癌肿: ' + d.cancer_type;
@@ -871,7 +885,7 @@ const Charts = {
                 }
             },
             grid: { top: 60, bottom: 50, left: 240, right: 80 },
-            xAxis: { type: 'value', name: '天数（入组=0）', nameLocation: 'center', nameGap: 30, min: -maxDays * 0.03, max: maxDays, splitLine: { show: false }, axisLabel: { formatter: function(v) { return v < 0 ? '' : v; } } },
+            xAxis: { type: 'value', name: '入组天数', nameLocation: 'center', nameGap: 30, min: -maxDays * 0.03, max: maxDays, splitLine: { show: false }, axisLabel: { formatter: function(v) { return v < 0 ? '' : v; } } },
             yAxis: { type: 'category', data: yData, inverse: true, axisLabel: { fontSize: n <= 20 ? 11 : n <= 40 ? 9 : 7 } },
             series: series
         });

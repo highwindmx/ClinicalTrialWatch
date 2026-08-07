@@ -100,6 +100,9 @@ const api = {
     getAdverseEvents(patientId) {
         return fetch(`${API_BASE}/patients/${patientId}/adverse-events`).then(checkResponse);
     },
+    getProjectAdverseEvents(projectId) {
+        return fetch(`${API_BASE}/projects/${projectId}/adverse-events`).then(checkResponse);
+    },
     createAdverseEvent(patientId, data) {
         return fetch(`${API_BASE}/patients/${patientId}/adverse-events`, {
             method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)

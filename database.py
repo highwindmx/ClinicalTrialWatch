@@ -190,6 +190,8 @@ def init_db():
         project_id INTEGER NOT NULL,
         name TEXT NOT NULL,
         color TEXT DEFAULT '#378ADD',
+        medication_interval INTEGER,
+        assessment_interval INTEGER,
         sort_order INTEGER DEFAULT 0,
         FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE
     )''')
@@ -261,6 +263,33 @@ def migrate_db():
             print(f"迁移 project.dlt_days 失败: {e}")
         # 已存在则忽略（幂等）
 
+    # 添加 medication_interval（用药间隔天数，默认21天）
+    try:
+        c.execute("ALTER TABLE project ADD COLUMN medication_interval INTEGER DEFAULT 21")
+        conn.commit()
+        print("迁移：project 表添加 medication_interval 字段")
+    except Exception as e:
+        if "duplicate column name" not in str(e).lower():
+            print(f"迁移 project.medication_interval 失败: {e}")
+
+    # 添加 assessment_interval（肿评间隔天数，默认42天≈6周）
+    try:
+        c.execute("ALTER TABLE project ADD COLUMN assessment_interval INTEGER DEFAULT 42")
+        conn.commit()
+        print("迁移：project 表添加 assessment_interval 字段")
+    except Exception as e:
+        if "duplicate column name" not in str(e).lower():
+            print(f"迁移 project.assessment_interval 失败: {e}")
+
+    # 添加 assessment_calc_base（预计下次影像计算基准：baseline=基于基线影像时间，enroll=基于入组日期）
+    try:
+        c.execute("ALTER TABLE project ADD COLUMN assessment_calc_base TEXT DEFAULT 'baseline'")
+        conn.commit()
+        print("迁移：project 表添加 assessment_calc_base 字段")
+    except Exception as e:
+        if "duplicate column name" not in str(e).lower():
+            print(f"迁移 project.assessment_calc_base 失败: {e}")
+
     # 添加 patient.dlt_observation 字段（是否进行DLT观察，默认1=是）
     try:
         c.execute("ALTER TABLE patient ADD COLUMN dlt_observation INTEGER DEFAULT 1")
@@ -302,6 +331,25 @@ def migrate_db():
         if "duplicate column name" not in str(e).lower():
             print(f"迁移 baseline.dose_group_id 失败: {e}")
 
+    # 添加 dose_group.medication_interval / assessment_interval（用药/肿评间隔，按剂量组配置）
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info('dose_group')").fetchall()]
+        if 'medication_interval' not in cols:
+            conn.execute("ALTER TABLE dose_group ADD COLUMN medication_interval INTEGER")
+            conn.commit()
+            print("迁移：dose_group 表添加 medication_interval 字段")
+    except Exception as e:
+        print(f"迁移 dose_group.medication_interval 失败: {e}")
+
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info('dose_group')").fetchall()]
+        if 'assessment_interval' not in cols:
+            conn.execute("ALTER TABLE dose_group ADD COLUMN assessment_interval INTEGER")
+            conn.commit()
+            print("迁移：dose_group 表添加 assessment_interval 字段")
+    except Exception as e:
+        print(f"迁移 dose_group.assessment_interval 失败: {e}")
+
     conn.close()
 
 # ==================== 项目 CRUD ====================
@@ -334,7 +382,7 @@ def update_project(pid, data):
     conn = get_db()
     fields = []
     vals = []
-    for k in ('name', 'code', 'description', 'status', 'dlt_days'):
+    for k in ('name', 'code', 'description', 'status', 'dlt_days', 'medication_interval', 'assessment_interval', 'assessment_calc_base'):
         if k in data:
             fields.append(f"{k}=?")
             vals.append(data[k])
@@ -407,8 +455,15 @@ def create_patient(data):
     conn = get_db()
     try:
         c = conn.cursor()
-        c.execute("INSERT INTO patient (project_id, patient_id, status, enroll_date, off_study_date, dlt_observation) VALUES (?,?,?,?,?,?)",
-                  (data['project_id'], data['patient_id'], data.get('status', 'treatment'), data.get('enroll_date'), data.get('off_study_date'), data.get('dlt_observation', 1)))
+        c.execute("""INSERT INTO patient
+                    (project_id, patient_id, status, enroll_date,
+                     end_treatment_date, death_lost_date, dlt_observation)
+                    VALUES (?,?,?,?,?,?,?)""",
+                  (data['project_id'], data['patient_id'],
+                   data.get('status', 'treatment'),
+                   data.get('enroll_date'),
+                   data.get('end_treatment_date'), data.get('death_lost_date'),
+                   data.get('dlt_observation', 1)))
         new_id = c.lastrowid
         # 同时创建基线记录（cancer_type/dose_group 同时存 ID 和名称）
         cancer_type = data.get('cancer_type', '')
@@ -441,10 +496,36 @@ def update_patient(pid, data):
     try:
         fields = []
         vals = []
-        for k in ('patient_id', 'status', 'enroll_date', 'off_study_date', 'dlt_observation'):
+        # 允许更新的字段白名单（含新增时间字段）
+        allowed = ('patient_id', 'status', 'enroll_date',
+                   'end_treatment_date', 'death_lost_date', 'dlt_observation')
+        for k in allowed:
             if k in data:
                 fields.append(f"{k}=?")
                 vals.append(data[k])
+        # 状态自动计算：优先使用传入值，否则基于三个日期自动计算
+        auto_status = None
+        if 'status' in data:
+            auto_status = data['status']
+        else:
+            row = conn.execute(
+                "SELECT enroll_date, end_treatment_date, death_lost_date FROM patient WHERE id=?", (pid,)
+            ).fetchone()
+            if row:
+                db_enroll = data.get('enroll_date', row[0])
+                db_end = data.get('end_treatment_date', row[1])
+                db_death = data.get('death_lost_date', row[2])
+                if db_death:
+                    auto_status = 'off_study'
+                elif db_end:
+                    auto_status = 'followup'
+                elif db_enroll:
+                    auto_status = 'treatment'
+                else:
+                    auto_status = 'treatment'
+        if auto_status and 'status' not in data:
+            fields.append("status=?")
+            vals.append(auto_status)
         if fields:
             fields.append("updated_at=CURRENT_TIMESTAMP")
             vals.append(pid)
@@ -471,6 +552,9 @@ def update_patient(pid, data):
             vals = list(bdata.values()) + [pid]
             conn.execute(f"UPDATE baseline SET {sets}, updated_at=CURRENT_TIMESTAMP WHERE patient_id=?", vals)
             conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -484,7 +568,7 @@ def delete_patient(pid):
 
 def get_medications(patient_id):
     conn = get_db()
-    rows = conn.execute("SELECT * FROM medication WHERE patient_id=? ORDER BY planned_date, cycle, day_in_cycle", (patient_id,)).fetchall()
+    rows = conn.execute("SELECT * FROM medication WHERE patient_id=? ORDER BY actual_date, cycle, day_in_cycle", (patient_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -571,6 +655,23 @@ def delete_tumor_assessment(tid):
 def get_adverse_events(patient_id):
     conn = get_db()
     rows = conn.execute("SELECT * FROM adverse_event WHERE patient_id=? ORDER BY onset_date", (patient_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_project_adverse_events(project_id):
+    """获取项目下所有不良事件（JOIN 患者编号与剂量组），用于 AE 汇总页面"""
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT a.id, a.patient_id, p.patient_id as pid_text, b.dose_group,
+               a.ae_term, a.onset_date, a.end_date, a.grade,
+               a.severity, a.outcome, a.drug_relation, a.action_taken,
+               a.serious, a.notes
+        FROM adverse_event a
+        JOIN patient p ON a.patient_id = p.id
+        LEFT JOIN baseline b ON p.id = b.patient_id
+        WHERE p.project_id = ?
+        ORDER BY p.patient_id, a.onset_date
+    """, (project_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -738,28 +839,36 @@ def get_events_for_gantt(project_id, year, month):
     return get_events_for_gantt_range(project_id, first_day, last_day)
 
 def get_events_for_gantt_range(project_id, start_date, end_date):
-    """获取指定项目、日期范围内所有患者的日历事件（用于甘特图展示）"""
+    """获取指定项目、日期范围内所有患者的日历事件（用于甘特图展示）
+    包含真实事件 + 在组治疗患者的预测下次用药/肿评事件
+    """
+    from datetime import date, timedelta
     conn = get_db()
     events = []
 
-    # 用药事件
+    # 获取项目配置（用药间隔、肿评间隔、预计下次影像计算基准）
+    proj = conn.execute(
+        "SELECT medication_interval, assessment_interval, assessment_calc_base FROM project WHERE id=?",
+        (project_id,)
+    ).fetchone()
+    med_interval = proj['medication_interval'] if proj else 21
+    assess_interval = proj['assessment_interval'] if proj else 42
+    assess_calc_base = proj['assessment_calc_base'] if proj else 'baseline'
+
+    # 用药事件（仅实际给药日期）
     med_rows = conn.execute("""
         SELECT m.id, m.patient_id, p.patient_id as pid_text,
-               m.drug_name, m.actual_date, m.planned_date, m.dose, m.dose_unit, m.cycle
+               m.drug_name, m.actual_date, m.dose, m.dose_unit, m.cycle
         FROM medication m JOIN patient p ON m.patient_id=p.id
-        WHERE p.project_id=? AND (
-            (m.actual_date >= ? AND m.actual_date <= ?) OR
-            (m.planned_date >= ? AND m.planned_date <= ?)
-        )
-    """, (project_id, start_date, end_date, start_date, end_date)).fetchall()
+        WHERE p.project_id=? AND m.actual_date >= ? AND m.actual_date <= ?
+    """, (project_id, start_date, end_date)).fetchall()
 
     for r in med_rows:
-        dt = r['actual_date'] or r['planned_date']
-        if dt:
+        if r['actual_date']:
             events.append({
                 'type': 'drug', 'id': r['id'], 'patient_id': r['patient_id'],
                 'pid_text': r['pid_text'],
-                'date': dt, 'actual_date': r['actual_date'], 'planned_date': r['planned_date'],
+                'date': r['actual_date'], 'actual_date': r['actual_date'],
                 'label': f"{r['drug_name']} {r['cycle'] or ''}",
                 'detail': f"剂量: {r['dose']}{r['dose_unit'] or ''}"
             })
@@ -823,6 +932,71 @@ def get_events_for_gantt_range(project_id, start_date, end_date):
                 'detail': f"浓度: {r['concentration']} {r['unit'] if 'unit' in r.keys() else 'ng/mL'}"
             })
 
+    # 为在组治疗中的患者生成预测下次用药和肿评事件
+    # 每个患者的间隔取自其剂量组配置（剂量组未设置时跳过预测）
+    treatment_patients = conn.execute("""
+        SELECT p.id, p.patient_id, p.enroll_date,
+               (SELECT MAX(actual_date) FROM medication WHERE patient_id=p.id AND actual_date IS NOT NULL) as last_drug_date,
+               (SELECT MAX(eval_date) FROM tumor_assessment WHERE patient_id=p.id AND eval_date IS NOT NULL) as last_assess_date,
+               (SELECT COUNT(*) FROM tumor_assessment WHERE patient_id=p.id) as assess_count,
+               dg.medication_interval as dg_med_interval,
+               dg.assessment_interval as dg_assess_interval
+        FROM patient p
+        LEFT JOIN baseline b ON p.id = b.patient_id
+        LEFT JOIN dose_group dg ON b.dose_group_id = dg.id
+        WHERE p.project_id=? AND p.status='treatment'
+    """, (project_id,)).fetchall()
+
+    # 根据剂量组间隔生成预测事件
+    for p in treatment_patients:
+        # 预测下次用药
+        if p['last_drug_date'] and p['dg_med_interval'] is not None:
+            last_drug = date.fromisoformat(p['last_drug_date'])
+            next_drug = last_drug + timedelta(days=p['dg_med_interval'])
+            next_drug_str = next_drug.isoformat()
+            if start_date <= next_drug_str <= end_date:
+                events.append({
+                    'type': 'next_drug',
+                    'patient_id': p['id'],
+                    'pid_text': p['patient_id'],
+                    'date': next_drug_str,
+                    'label': '计划用药',
+                    'detail': f"上次用药: {p['last_drug_date']}, 间隔: {p['dg_med_interval']}天"
+                })
+        # 预测下次肿评（支持两种计算基准）
+        if p['dg_assess_interval'] is not None:
+            next_assess = None
+            detail_text = ''
+            label_text = '预测肿评'
+
+            if assess_calc_base == 'enroll' and p['enroll_date']:
+                # 基于入组日期：入组日期 + 间隔 × 已完成评估次数
+                enroll = date.fromisoformat(p['enroll_date'])
+                count = p['assess_count'] or 0
+                if count == 0:
+                    next_assess = enroll
+                else:
+                    next_assess = enroll + timedelta(days=count * p['dg_assess_interval'])
+                detail_text = f"入组日期: {p['enroll_date']}, 间隔: {p['dg_assess_interval']}天, 已完成评估: {count}次"
+                label_text = '预测影像'
+            elif p['last_assess_date']:
+                # 基于基线影像时间：上次影像日期 + 间隔（原有逻辑）
+                last_assess = date.fromisoformat(p['last_assess_date'])
+                next_assess = last_assess + timedelta(days=p['dg_assess_interval'])
+                detail_text = f"上次肿评: {p['last_assess_date']}, 间隔: {p['dg_assess_interval']}天"
+
+            if next_assess:
+                next_assess_str = next_assess.isoformat()
+                if start_date <= next_assess_str <= end_date:
+                    events.append({
+                        'type': 'next_assessment',
+                        'patient_id': p['id'],
+                        'pid_text': p['patient_id'],
+                        'date': next_assess_str,
+                        'label': label_text,
+                        'detail': detail_text
+                    })
+
     conn.close()
     return events
 
@@ -838,8 +1012,10 @@ def get_dose_groups(project_id):
 def create_dose_group(data):
     conn = get_db()
     c = conn.cursor()
-    c.execute("INSERT INTO dose_group (project_id, name, color, sort_order) VALUES (?,?,?,?)",
-              (data['project_id'], data.get('name'), data.get('color', '#378ADD'), data.get('sort_order', 0)))
+    c.execute("INSERT INTO dose_group (project_id, name, color, medication_interval, assessment_interval, sort_order) VALUES (?,?,?,?,?,?)",
+              (data['project_id'], data.get('name'), data.get('color', '#378ADD'),
+               data.get('medication_interval'), data.get('assessment_interval'),
+               data.get('sort_order', 0)))
     conn.commit()
     new_id = c.lastrowid
     conn.close()
@@ -849,7 +1025,7 @@ def update_dose_group(dgid, data):
     conn = get_db()
     fields = []
     vals = []
-    for k in ('name', 'color', 'sort_order'):
+    for k in ('name', 'color', 'sort_order', 'medication_interval', 'assessment_interval'):
         if k in data:
             fields.append(f"{k}=?")
             vals.append(data[k])
@@ -929,14 +1105,14 @@ def generate_demo_data(project_id):
 
     # ── 1. 剂量组 ──
     dose_groups = [
-        ('3mg/kg',  '#3B82F6', 0),
-        ('6mg/kg',  '#10B981', 1),
-        ('10mg/kg', '#F59E0B', 2),
+        ('3mg/kg',  '#3B82F6', 0, 21,  42),
+        ('6mg/kg',  '#10B981', 1, 21,  42),
+        ('10mg/kg', '#F59E0B', 2, 21,  42),
     ]
     dose_group_ids = {}
-    for name, color, order in dose_groups:
-        c.execute("INSERT INTO dose_group (project_id, name, color, sort_order) VALUES (?,?,?,?)",
-                  (project_id, name, color, order))
+    for name, color, order, med_int, assess_int in dose_groups:
+        c.execute("INSERT INTO dose_group (project_id, name, color, sort_order, medication_interval, assessment_interval) VALUES (?,?,?,?,?,?)",
+                  (project_id, name, color, order, med_int, assess_int))
         dose_group_ids[name] = c.lastrowid
 
     # ── 2. 癌肿类型 ──
