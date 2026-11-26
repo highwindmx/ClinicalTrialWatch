@@ -29,9 +29,10 @@ ClinicalTrialWatch 是为临床试验研究人员打造的数据看板系统，�
 
 ### 技术栈
 
-- **后端**：Python 3.13 + Flask + SQLite
+- **后端**：Python 3.14 + Flask + SQLite
 - **前端**：原生 JS + ECharts 5
 - **数据交换**：支持 Excel 导入 / 导出
+- **依赖管理**：`pyproject.toml` + `uv.lock`（亦可 `pip install -r requirements.txt`）
 
 ### 快速开始
 
@@ -46,7 +47,7 @@ setup.bat
 # 3. 启动服务
 venv\Scripts\python app.py
 
-# 4. 浏览器访问 http://localhost:5000
+# 4. 浏览器访问 http://localhost:5003
 ```
 
 > macOS / Linux 用户请手动创建虚拟环境并安装依赖：
@@ -56,6 +57,12 @@ venv\Scripts\python app.py
 > pip install -r requirements.txt
 > python app.py
 > ```
+>
+> 或使用 `uv`：
+> ```bash
+> uv sync
+> uv run python app.py
+> ```
 
 ### 项目结构
 
@@ -63,7 +70,9 @@ venv\Scripts\python app.py
 ClinicalTrialWatch/
 ├── app.py              # Flask 后端入口
 ├── database.py         # 数据库模型与查询
-├── requirements.txt    # Python 依赖
+├── requirements.txt    # Python 依赖（pip 安装）
+├── pyproject.toml      # 项目元数据与依赖（uv 安装）
+├── uv.lock             # 锁定依赖版本
 ├── setup.bat          # Windows 一键初始化
 ├── data/              # SQLite 数据库（不提交到仓库）
 └── frontend/          # 前端静态文件
@@ -103,9 +112,10 @@ ClinicalTrialWatch is an open-source data dashboard for clinical trial researche
 
 ### Tech Stack
 
-- **Backend**: Python 3.13 + Flask + SQLite
+- **Backend**: Python 3.14 + Flask + SQLite
 - **Frontend**: Vanilla JS + ECharts 5
 - **Data Exchange**: Excel import / export support
+- **Dependency management**: `pyproject.toml` + `uv.lock` (or `pip install -r requirements.txt`)
 
 ### Quick Start
 
@@ -123,7 +133,7 @@ python -c "import database; database.init_db()"
 # 3. Run
 python app.py
 
-# 4. Open http://localhost:5000
+# 4. Open http://localhost:5003
 ```
 
 ### Project Structure
@@ -132,7 +142,9 @@ python app.py
 ClinicalTrialWatch/
 ├── app.py              # Flask backend entry
 ├── database.py         # DB models & queries
-├── requirements.txt    # Python dependencies
+├── requirements.txt    # Python dependencies (pip)
+├── pyproject.toml      # Project metadata & deps (uv)
+├── uv.lock             # Locked dependency versions
 ├── setup.bat          # Windows one-click setup
 ├── data/              # SQLite DB (excluded from repo)
 └── frontend/          # Frontend static files

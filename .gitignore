@@ -10,8 +10,13 @@ env/
 ENV/
 
 # ==================== 数据库（不提交真实临床数据）====================
+*.db
+*.db-wal
+*.db-shm
 data/*.db
 data/*.db.bak
+data/*.db-wal
+data/*.db-shm
 data/exports/
 # 注意：data/clinwatch.ico 是我们的托盘图标缓存，需要入库，不要忽略
 
@@ -40,3 +45,11 @@ desktop.ini
 # ==================== 临时文件 ====================
 *.tmp
 *.temp
+*.lnk
+data/probe_medium.txt
+
+# ==================== PyInstaller 打包产物 ====================
+dist/
+build/
+*.spec
+# 注：data/clinwatch.ico 是托盘图标资源，已在上方说明需保留，此处不忽略

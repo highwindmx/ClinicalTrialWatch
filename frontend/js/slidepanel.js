@@ -136,7 +136,7 @@ const SlidePanel = {
                     // 从项目配置加载的下拉选项（value=ID, label=name）
                     input = '<select id="sp_' + f.key + '" class="form-input" onchange="SlidePanel.onBaselineChange(\'' + f.key + '\',this.value,this)">' +
                         '<option value="">--</option>' +
-                        f.options.map(o => '<option value="' + o.id + '" ' + (String(f.value) === String(o.id) ? 'selected' : '') + '>' + o.name + '</option>').join('') +
+                        f.options.map(o => '<option value="' + o.id + '" ' + (String(f.value) === String(o.id) ? 'selected' : '') + '>' + escapeHtml(o.name) + '</option>').join('') +
                         '</select>';
                 } else if (f.type === 'select') {
                     input = '<select id="sp_' + f.key + '" class="form-input" onchange="SlidePanel.onBaselineChange(\'' + f.key + '\',this.value,this)"><option value="">--</option>' +
@@ -189,13 +189,28 @@ const SlidePanel = {
     },
 
     // ============ 用药 ============
+    /** 根据已录入用药推算下一笔的合理周期(CXDY)作为录入建议 */
+    suggestNextCycle() {
+        const meds = (this.medications || []).filter(m => m.cycle && /C\d+[Dd]\d+/i.test(m.cycle));
+        if (meds.length === 0) return 'C1D1';
+        // 取实际日期最新的一笔（无日期则按 id 降序兜底）
+        meds.sort((a, b) => (b.actual_date || '').localeCompare(a.actual_date || '') || (b.id || 0) - (a.id || 0));
+        const m = String(meds[0].cycle).match(/C(\d+)[Dd](\d+)/i);
+        if (!m) return 'C1D1';
+        const c = parseInt(m[1], 10), d = parseInt(m[2], 10);
+        const interval = (typeof Calendar !== 'undefined' && Calendar.medInterval) || 21;
+        const nd = d + 7; // 常规给药节奏 D1→D8→D15
+        if (nd > interval) return 'C' + (c + 1) + 'D1';
+        return 'C' + c + 'D' + nd;
+    },
     renderMedications() {
         const body = document.getElementById('spMedBody');
+        const suggest = this.suggestNextCycle();
         body.innerHTML = this.medications.map(m => '<tr>' +
             '<td><input class="inline-edit" value="' + escapeHtml(m.drug_name||'') + '" onchange="SlidePanel.updateMed(' + m.id + ',\'drug_name\',this.value,this)"></td>' +
             '<td><input class="inline-edit" type="date" value="' + escapeHtml(m.actual_date||'') + '" onchange="SlidePanel.updateMed(' + m.id + ',\'actual_date\',this.value,this)"></td>' +
             '<td><input class="inline-edit" value="' + escapeHtml(m.dose||'') + '" onchange="SlidePanel.updateMedDose(' + m.id + ',this.value,this)" placeholder="如200mg" style="width:80px"></td>' +
-            '<td><input class="inline-edit" value="' + escapeHtml(m.cycle||'') + '" onchange="SlidePanel.updateMed(' + m.id + ',\'cycle\',this.value,this)" placeholder="C1D1" style="width:60px"></td>' +
+            '<td><input class="inline-edit" value="' + escapeHtml(m.cycle||'') + '" onchange="SlidePanel.updateMed(' + m.id + ',\'cycle\',this.value,this)" placeholder="' + suggest + '" style="width:60px"></td>' +
             '<td><button class="btn btn-sm" onclick="SlidePanel.deleteMed(' + m.id + ')" style="color:#D85A30">删</button></td>' +
             '</tr>').join('');
     },
@@ -262,7 +277,7 @@ const SlidePanel = {
                 '<td><input class="inline-edit" type="date" value="' + (a.eval_date||'') + '" onchange="SlidePanel.updateAssess(' + a.id + ',\'eval_date\',this.value,this)"></td>' +
                 '<td>' + (isBase ?
                     '<span style="font-size:11px;color:#378ADD;font-weight:600">基线</span>' :
-                    '<input class="inline-edit" value="' + (a.eval_type||'') + '" onchange="SlidePanel.updateAssess(' + a.id + ',\'eval_type\',this.value,this)" placeholder="V1/V2/..." style="width:50px">'
+                    '<input class="inline-edit" value="' + escapeHtml(a.eval_type||'') + '" onchange="SlidePanel.updateAssess(' + a.id + ',\'eval_type\',this.value,this)" placeholder="V1/V2/..." style="width:50px">'
                 ) + '</td>' +
                 '<td><input class="inline-edit" type="number" step="0.1" value="' + (a.target_sod||'') + '" onchange="SlidePanel.updateAssess(' + a.id + ',\'target_sod\',this.value,this)" style="width:60px" placeholder="mm"></td>' +
                 '<td style="font-size:11px;color:#378ADD;min-width:40px">' + sodPercent + '</td>' +

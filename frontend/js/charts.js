@@ -162,15 +162,20 @@ const Charts = {
         const n = patients.length;
         if (n === 0) {
             return { n: 0, ageMean: '-', ageStd: '-', ageMedian: '-', ageMin: '-', ageMax: '-',
-                     sexDist: {}, ecogDist: {}, cancerDist: {}, groupDist: {} };
+                     sexDist: {}, ecogDist: {}, cancerDist: {}, groupDist: {}, statusDist: {} };
         }
         let ageSum = 0, ageCount = 0, ages = [];
-        const sexDist = {}, cancerDist = {}, ecogDist = {}, groupDist = {};
+        const sexDist = {}, cancerDist = {}, ecogDist = {}, groupDist = {}, statusDist = {};
         patients.forEach(p => {
             const sex = p.sex || '未知'; sexDist[sex] = (sexDist[sex] || 0) + 1;
             const cancer = p.cancer_type || '未知'; cancerDist[cancer] = (cancerDist[cancer] || 0) + 1;
             const ecog = p.ecog_score != null ? String(p.ecog_score) : '未知'; ecogDist[ecog] = (ecogDist[ecog] || 0) + 1;
             const group = p.dose_group || '未分组'; groupDist[group] = (groupDist[group] || 0) + 1;
+            // 在组状态：空状态视为在组治疗中（与日历/绿带判定一致）
+            const st = (!p.status || p.status === 'treatment') ? '在组治疗中'
+                : (p.status === 'followup' ? '结束治疗随访中'
+                : (p.status === 'off_study' ? '死亡/失访' : (p.status || '未知')));
+            statusDist[st] = (statusDist[st] || 0) + 1;
             if (p.age) { const age = parseInt(p.age); ageSum += age; ageCount++; ages.push(age); }
         });
         const ageMean = ageCount > 0 ? (ageSum / ageCount).toFixed(1) : '-';
@@ -178,7 +183,7 @@ const Charts = {
         const ageMedian = ageCount > 0 ? this.median(ages) : '-';
         const ageMin = ageCount > 0 ? Math.min(...ages) : '-';
         const ageMax = ageCount > 0 ? Math.max(...ages) : '-';
-        return { n: n, ageMean: ageMean, ageStd: ageStd, ageMedian: ageMedian, ageMin: ageMin, ageMax: ageMax, sexDist: sexDist, ecogDist: ecogDist, cancerDist: cancerDist, groupDist: groupDist };
+        return { n: n, ageMean: ageMean, ageStd: ageStd, ageMedian: ageMedian, ageMin: ageMin, ageMax: ageMax, sexDist: sexDist, ecogDist: ecogDist, cancerDist: cancerDist, groupDist: groupDist, statusDist: statusDist };
     },
 
     /** 格式化 N(%) */
@@ -217,6 +222,21 @@ const Charts = {
             html += '<th style="min-width:100px">特征</th>';
             groups.forEach(g => { html += '<th style="min-width:110px">' + g + ' (N=' + stats[g].n + ')</th>'; });
             html += '</tr></thead><tbody>';
+
+            // 在组状态（在组人数计数项，置于首行）
+            html += '<tr class="category-row"><td>在组状态</td>' + groups.map(() => '<td></td>').join('') + '</tr>';
+            const statusOrder = ['在组治疗中', '结束治疗随访中', '死亡/失访'];
+            const allStatusKeys = [...new Set(groups.flatMap(g => Object.keys(stats[g].statusDist)))];
+            const sortedStatus = statusOrder.filter(k => allStatusKeys.includes(k))
+                .concat(allStatusKeys.filter(k => !statusOrder.includes(k)));
+            sortedStatus.forEach(k => {
+                html += '<tr class="subcategory-row"><td>' + k + '</td>';
+                groups.forEach(g => {
+                    const n = stats[g].statusDist[k] || 0;
+                    html += '<td>' + this._fmtNPct(n, stats[g].n) + '</td>';
+                });
+                html += '</tr>';
+            });
 
             // 年龄
             html += '<tr class="category-row"><td>年龄(岁)</td>' + groups.map(() => '<td></td>').join('') + '</tr>';
@@ -310,9 +330,11 @@ const Charts = {
     _renderWaterfallChart() {
         let data = [...this.state.waterfallAllData];
         const container = document.getElementById('chartWaterfall');
-        // 清理旧图例
-        const oldLegend = container.parentElement.querySelector('.waterfall-legend');
-        if (oldLegend) oldLegend.remove();
+        // 清空图例容器（兼容旧版 append 到图表父节点的残留 + 空数据时避免残留）
+        const legendBox = document.getElementById('waterfallLegend');
+        if (legendBox) legendBox.innerHTML = '';
+        const legacy = container.parentElement.querySelector('.waterfall-legend');
+        if (legacy) legacy.remove();
         if (!data || !data.length) { this._showEmpty(container); return; }
 
         // 筛选
@@ -438,20 +460,27 @@ const Charts = {
             ]
         });
 
-        // 自定义图例
-        let legendHtml = '<div class="waterfall-legend" style="display:flex;flex-wrap:wrap;gap:12px;padding:6px 10px;font-size:14px;color:#374151">';
-        legendHtml += '<span style="font-weight:600;color:#374151">着色(' + colorLabel + '):</span>';
+        // 自定义图例（固定在图表上方工具栏之下，始终可见）
+        let legendHtml = '<span class="legend-title">着色(' + colorLabel + '):</span>';
         Object.entries(colorMap).forEach(([k, v]) => {
-            if (k) legendHtml += '<span style="display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:' + v + '"></span>' + k + '</span>';
+            if (k) legendHtml += '<span class="legend-item"><span class="legend-swatch" style="background:' + v + '"></span>' + k + '</span>';
         });
-        legendHtml += '<span style="display:flex;align-items:center;gap:4px"><span style="color:#374151;font-size:14px">▶</span>在组治疗</span>';
-        legendHtml += '<span style="display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#374151"></span>随访中</span>';
-        legendHtml += '<span style="display:flex;align-items:center;gap:4px"><span style="font-size:14px;color:#6b7280">×</span>死亡/失访</span>';
-        legendHtml += '<span style="display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:12px;height:12px;background:#22c55e;border-radius:50%;text-align:center;line-height:12px;color:#fff;font-size:8px">✓</span>确认CR/PR</span>';
-        legendHtml += '</div>';
-        const legendEl = document.createElement('div');
-        legendEl.innerHTML = legendHtml;
-        container.parentElement.appendChild(legendEl);
+        legendHtml += '<span class="legend-sep"></span>';
+        legendHtml += '<span class="legend-item"><span class="legend-symbol">▶</span>在组治疗</span>';
+        legendHtml += '<span class="legend-item"><span class="legend-dot"></span>随访中</span>';
+        legendHtml += '<span class="legend-item"><span class="legend-cross">×</span>死亡/失访</span>';
+        legendHtml += '<span class="legend-item"><span class="legend-dot confirm">✓</span>确认CR/PR</span>';
+        const legendContainer = document.getElementById('waterfallLegend');
+        if (legendContainer) {
+            legendContainer.innerHTML = legendHtml;
+            legendContainer.style.display = 'flex';
+        } else {
+            // 回退：若容器缺失，仍 append 到图表父节点
+            const legendEl = document.createElement('div');
+            legendEl.className = 'waterfall-legend';
+            legendEl.innerHTML = legendHtml;
+            container.parentElement.appendChild(legendEl);
+        }
         this._registerResize(chart);
     },
 

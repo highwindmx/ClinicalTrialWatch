@@ -39,6 +39,24 @@ const api = {
         return fetch(`${API_BASE}/projects/${id}`, { method: 'DELETE' }).then(checkResponse);
     },
 
+    // ==================== 入组表自动同步 ====================
+    getEnrollmentSync(id) {
+        return fetch(`${API_BASE}/projects/${id}/enrollment-sync`).then(checkResponse);
+    },
+    saveEnrollmentSync(id, data) {
+        return fetch(`${API_BASE}/projects/${id}/enrollment-sync`, {
+            method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)
+        }).then(checkResponse);
+    },
+    scanEnrollment(id, data = {}) {
+        return fetch(`${API_BASE}/projects/${id}/enrollment-sync/scan`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)
+        }).then(checkResponse);
+    },
+    getEnrollmentNotice(id) {
+        return fetch(`${API_BASE}/projects/${id}/enrollment-sync/notice`).then(checkResponse);
+    },
+
     // ==================== 患者 ====================
     getPatients(projectId) {
         return fetch(`${API_BASE}/patients?project_id=${projectId}`).then(checkResponse);
@@ -168,9 +186,6 @@ const api = {
     },
 
     // ==================== 甘特图 ====================
-    getGanttData(projectId, zoomLevel, dateStr) {
-        return fetch(`${API_BASE}/gantt?project_id=${projectId}&zoom=${zoomLevel}&date=${dateStr}`).then(checkResponse);
-    },
     getGanttFullData(projectId) {
         return fetch(`${API_BASE}/gantt-full?project_id=${projectId}`).then(checkResponse);
     },

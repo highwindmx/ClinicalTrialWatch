@@ -1,29 +1,111 @@
 import sqlite3
 import os
+import sys
 from datetime import datetime
 from contextlib import contextmanager
 
-DB_PATH = os.path.join(os.path.dirname(__file__), 'data', 'clinical.db')
+try:
+    from flask import g, has_app_context  # 请求上下文内复用连接
+except Exception:  # 非 Flask 环境（如离线脚本）下占位，使下方代码始终可用
+    class _NoAppCtx:
+        def __getattr__(self, _):
+            return None
+    g = _NoAppCtx()
+    def has_app_context():
+        return False
 
-def get_db():
-    """获取数据库连接"""
+# 数据根目录：冻结态（PyInstaller）用 exe 所在目录（持久、重启不丢），开发态用脚本目录
+if getattr(sys, "frozen", False):
+    _DATA_ROOT = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    _DATA_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+DB_PATH = os.environ.get('CLINWATCH_TEST_DB') or os.path.join(_DATA_ROOT, 'data', 'clinical.db')
+
+def _open_connection():
+    """真正打开一个全新的 SQLite 连接（含 PRAGMA 配置）。"""
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
+_REQUEST_CONN_ATTR = '_clinwatch_db_conn'
+
+def get_db():
+    """获取数据库连接。
+
+    在 Flask 请求上下文中，复用同一个连接（缓存于 flask.g），
+    请求结束由 teardown 关闭，避免每个函数调用都新建连接造成性能浪费；
+    非请求上下文（离线脚本）则每次新建，保持原有行为。
+    """
+    if has_app_context():
+        conn = getattr(g, _REQUEST_CONN_ATTR, None)
+        if conn is not None:
+            return conn
+        conn = _open_connection()
+        setattr(g, _REQUEST_CONN_ATTR, conn)
+        return conn
+    return _open_connection()
+
 @contextmanager
 def get_db_ctx():
-    """数据库连接上下文管理器，自动关闭连接（推荐新代码使用此方式）"""
+    """数据库连接上下文管理器，自动管理事务。
+
+    说明：连接本身由 get_db() 统一提供（请求上下文内复用 flask.g 缓存的连接），
+    因此这里只负责提交/回滚事务，不再主动关闭连接——连接的关闭统一交由
+    Flask teardown_appcontext（close_request_connection）处理，避免把
+    请求级复用连接提前关掉导致同一请求后续 get_db() 拿到已关闭连接。
+    非请求上下文（离线脚本）下 get_db() 每次返回全新连接且不会被缓存，
+    此时本上下文管理器负责关闭它，避免连接泄漏。
+    """
     conn = get_db()
+    own = not has_app_context()  # 仅离线脚本场景下由本管理器关闭连接
     try:
         yield conn
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         raise
     finally:
+        if own:
+            _close_conn(conn)
+
+def close_request_connection(exception=None):
+    """Flask teardown：关闭当前请求在 flask.g 中缓存的数据库连接。
+
+    仅在此处真正关闭请求级复用连接；需从 app.py 通过
+    app.teardown_appcontext(database.close_request_connection) 注册。
+    exception 参数由 Flask 传入（忽略），保证函数签名兼容。
+    """
+    if not has_app_context():
+        return
+    conn = getattr(g, _REQUEST_CONN_ATTR, None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        setattr(g, _REQUEST_CONN_ATTR, None)
+
+
+def _close_conn(conn):
+    """关闭数据库连接。
+
+    请求上下文（Flask 请求内）下，连接由 flask.g 缓存、由 teardown_appcontext
+    统一关闭，此处不关闭——否则会把同一请求后续 get_db() 复用的连接提前关掉，
+    导致后续查询拿到已关闭连接（"Cannot operate on a closed database"）。
+    非请求上下文（离线脚本）下则正常关闭，避免连接泄漏。
+    """
+    if has_app_context():
+        return
+    try:
         conn.close()
+    except Exception:
+        pass
+
 
 def init_db():
     """初始化数据库，创建所有表"""
@@ -205,6 +287,11 @@ def init_db():
         FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE
     )''')
 
+    # ---- 子表外键索引（性能优化）----
+    # 各临床子表均以 patient_id 关联 patient，按患者批量查询时走索引可大幅提速
+    for t in ('medication', 'tumor_assessment', 'adverse_event', 'pk_data', 'tumor_marker', 'baseline'):
+        c.execute(f"CREATE INDEX IF NOT EXISTS idx_{t}_patient_id ON {t}(patient_id)")
+
     # ---- 数据库迁移：兼容旧表结构 ----
     # 1. medication.cycle: INTEGER → TEXT (如"C1D1")
     try:
@@ -243,7 +330,7 @@ def init_db():
         raise
 
     conn.commit()
-    conn.close()
+    _close_conn(conn)
     print(f"数据库初始化完成: {DB_PATH}")
 
     # 运行迁移
@@ -310,6 +397,27 @@ def migrate_db():
             print(f"迁移 patient.name 失败: {e}")
         # 列已不存在则忽略（幂等）
 
+    # 添加 patient.end_treatment_date / death_lost_date（治疗结束、死亡/失访日期）
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info('patient')").fetchall()]
+        if 'end_treatment_date' not in cols:
+            c.execute("ALTER TABLE patient ADD COLUMN end_treatment_date DATE")
+            conn.commit()
+            print("迁移：patient 表添加 end_treatment_date 字段")
+    except Exception as e:
+        if "duplicate column name" not in str(e).lower():
+            print(f"迁移 patient.end_treatment_date 失败: {e}")
+
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info('patient')").fetchall()]
+        if 'death_lost_date' not in cols:
+            c.execute("ALTER TABLE patient ADD COLUMN death_lost_date DATE")
+            conn.commit()
+            print("迁移：patient 表添加 death_lost_date 字段")
+    except Exception as e:
+        if "duplicate column name" not in str(e).lower():
+            print(f"迁移 patient.death_lost_date 失败: {e}")
+
     # baseline 表添加 cancer_type_id / dose_group_id 外键字段
     try:
         cols = [r[1] for r in conn.execute("PRAGMA table_info('baseline')").fetchall()]
@@ -350,20 +458,53 @@ def migrate_db():
     except Exception as e:
         print(f"迁移 dose_group.assessment_interval 失败: {e}")
 
-    conn.close()
+    # 默认研究药物名称：入组表同步 C1D1 用药时写入 medication.drug_name
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info('project')").fetchall()]
+        if 'default_drug_name' not in cols:
+            conn.execute("ALTER TABLE project ADD COLUMN default_drug_name TEXT")
+            conn.commit()
+            print("迁移：project 表添加 default_drug_name 字段")
+    except Exception as e:
+        print(f"迁移 project.default_drug_name 失败: {e}")
+
+    # 入组表自动同步配置（每个项目一条）
+    c.execute('''CREATE TABLE IF NOT EXISTS xlsx_watch_config (
+        project_id INTEGER PRIMARY KEY,
+        xlsx_path TEXT,
+        sheet_name TEXT DEFAULT '入组',
+        enabled INTEGER DEFAULT 1,
+        last_scan_at TEXT,
+        last_signature TEXT,
+        last_result TEXT,
+        auto_notice TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE
+    )''')
+    # 旧库补列：watchdog 自动同步通知（前端读后清除）
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info('xlsx_watch_config')").fetchall()]
+        if 'auto_notice' not in cols:
+            conn.execute("ALTER TABLE xlsx_watch_config ADD COLUMN auto_notice TEXT")
+            print("迁移：xlsx_watch_config 表添加 auto_notice 字段")
+    except Exception as e:
+        print(f"迁移 xlsx_watch_config.auto_notice 失败: {e}")
+    conn.commit()
+
+    _close_conn(conn)
 
 # ==================== 项目 CRUD ====================
 
 def get_projects():
     conn = get_db()
     rows = conn.execute("SELECT * FROM project ORDER BY id").fetchall()
-    conn.close()
+    _close_conn(conn)
     return [dict(r) for r in rows]
 
 def get_project(pid):
     conn = get_db()
     row = conn.execute("SELECT * FROM project WHERE id=?", (pid,)).fetchone()
-    conn.close()
+    _close_conn(conn)
     return dict(row) if row else None
 
 def create_project(data):
@@ -373,16 +514,15 @@ def create_project(data):
               (data.get('name'), data.get('code'), data.get('description'), data.get('status', 'active')))
     conn.commit()
     new_id = c.lastrowid
-    conn.close()
+    _close_conn(conn)
     return new_id
 
 def update_project(pid, data):
-    # 安全说明：字段名来自硬编码白名单 ('name','code','description','status','dlt_days')，
-    # 非用户输入，不存在SQL注入风险；值使用参数化查询(?)
+    # 安全说明：字段名来自硬编码白名单，非用户输入，不存在SQL注入风险；值使用参数化查询(?)
     conn = get_db()
     fields = []
     vals = []
-    for k in ('name', 'code', 'description', 'status', 'dlt_days', 'medication_interval', 'assessment_interval', 'assessment_calc_base'):
+    for k in ('name', 'code', 'description', 'status', 'dlt_days', 'medication_interval', 'assessment_interval', 'assessment_calc_base', 'default_drug_name'):
         if k in data:
             fields.append(f"{k}=?")
             vals.append(data[k])
@@ -391,12 +531,76 @@ def update_project(pid, data):
         vals.append(pid)
         conn.execute(f"UPDATE project SET {','.join(fields)} WHERE id=?", vals)
         conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 def delete_project(pid):
     with get_db_ctx() as conn:
         conn.execute("DELETE FROM project WHERE id=?", (pid,))
         conn.commit()
+
+# ==================== 入组表同步配置 ====================
+
+def get_xlsx_watch_config(project_id):
+    """获取项目的入组表同步配置；未配置时返回默认值（不落库）。"""
+    conn = get_db()
+    row = conn.execute("SELECT * FROM xlsx_watch_config WHERE project_id=?", (project_id,)).fetchone()
+    _close_conn(conn)
+    if row:
+        data = dict(row)
+        data['enabled'] = bool(data.get('enabled'))
+        return data
+    return {
+        'project_id': project_id, 'xlsx_path': '', 'sheet_name': '入组',
+        'enabled': True, 'last_scan_at': None, 'last_signature': None,
+        'last_result': None, 'auto_notice': None, 'updated_at': None,
+    }
+
+
+def get_all_xlsx_watch_configs():
+    """取出全部已配置路径且开启监听的项目配置（供后台监听服务使用）。"""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM xlsx_watch_config WHERE enabled=1 AND xlsx_path IS NOT NULL AND xlsx_path != ''"
+    ).fetchall()
+    _close_conn(conn)
+    return [dict(r) for r in rows]
+
+
+def save_xlsx_watch_config(project_id, data):
+    """ upsert 项目同步配置。只更新白名单字段。"""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT project_id FROM xlsx_watch_config WHERE project_id=?", (project_id,)).fetchone()
+        allowed = ('xlsx_path', 'sheet_name', 'enabled', 'last_scan_at', 'last_signature', 'last_result', 'auto_notice')
+        values = {}
+        for k in allowed:
+            if k in data:
+                values[k] = int(bool(data[k])) if k == 'enabled' else data[k]
+        if row is None:
+            values.setdefault('sheet_name', '入组')
+            values.setdefault('enabled', 1)
+            cols = ['project_id'] + list(values.keys())
+            ph = ','.join('?' * len(cols))
+            conn.execute(f"INSERT INTO xlsx_watch_config ({','.join(cols)}) VALUES ({ph})",
+                         [project_id] + [values[k] for k in values])
+        elif values:
+            sets = ','.join(f"{k}=?" for k in values)
+            conn.execute(f"UPDATE xlsx_watch_config SET {sets} WHERE project_id=?",
+                         list(values.values()) + [project_id])
+        conn.execute("UPDATE xlsx_watch_config SET updated_at=CURRENT_TIMESTAMP WHERE project_id=?", (project_id,))
+        conn.commit()
+    finally:
+        _close_conn(conn)
+    return get_xlsx_watch_config(project_id)
+
+
+def delete_xlsx_watch_config(project_id):
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM xlsx_watch_config WHERE project_id=?", (project_id,))
+        conn.commit()
+    finally:
+        _close_conn(conn)
 
 # ==================== 患者 CRUD ====================
 
@@ -422,7 +626,7 @@ def clear_project_data(project_id):
         conn.rollback()
         raise
     finally:
-        conn.close()
+        _close_conn(conn)
 
 def get_patients(project_id=None):
     conn = get_db()
@@ -438,7 +642,7 @@ def get_patients(project_id=None):
             FROM patient p LEFT JOIN baseline b ON p.id=b.patient_id
             ORDER BY p.id
         """).fetchall()
-    conn.close()
+    _close_conn(conn)
     return [dict(r) for r in rows]
 
 def get_patient(pid):
@@ -448,8 +652,37 @@ def get_patient(pid):
         FROM patient p LEFT JOIN baseline b ON p.id=b.patient_id
         WHERE p.id=?
     """, (pid,)).fetchone()
-    conn.close()
+    _close_conn(conn)
     return dict(row) if row else None
+
+
+def find_patient_by_number(project_id, patient_id):
+    """按项目+筛选号（patient.patient_id）查内部 id，供入组表增量同步去重。"""
+    conn = get_db()
+    row = conn.execute("SELECT id, patient_id FROM patient WHERE project_id=? AND patient_id=?",
+                       (project_id, patient_id)).fetchone()
+    _close_conn(conn)
+    return dict(row) if row else None
+
+
+def has_c1d1_medication(patient_id):
+    """该患者是否已存在 C1D1 用药记录（用于幂等回填）。"""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT 1 FROM medication WHERE patient_id=? AND REPLACE(UPPER(COALESCE(cycle,'')),' ','')='C1D1' LIMIT 1",
+        (patient_id,)).fetchone()
+    _close_conn(conn)
+    return row is not None
+
+
+def has_baseline_assessment(patient_id):
+    """该患者是否已存在基线肿评记录（用于幂等回填）。"""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT 1 FROM tumor_assessment WHERE patient_id=? AND LOWER(COALESCE(eval_type,'')) IN ('基线','baseline') LIMIT 1",
+        (patient_id,)).fetchone()
+    _close_conn(conn)
+    return row is not None
 
 def create_patient(data):
     conn = get_db()
@@ -488,7 +721,7 @@ def create_patient(data):
         conn.rollback()
         raise
     finally:
-        conn.close()
+        _close_conn(conn)
 
 def update_patient(pid, data):
     # 安全说明：字段名来自硬编码白名单，非用户输入；值使用参数化查询
@@ -556,20 +789,20 @@ def update_patient(pid, data):
         conn.rollback()
         raise
     finally:
-        conn.close()
+        _close_conn(conn)
 
 def delete_patient(pid):
     conn = get_db()
     conn.execute("DELETE FROM patient WHERE id=?", (pid,))
     conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 # ==================== 用药 CRUD ====================
 
 def get_medications(patient_id):
     conn = get_db()
     rows = conn.execute("SELECT * FROM medication WHERE patient_id=? ORDER BY actual_date, cycle, day_in_cycle", (patient_id,)).fetchall()
-    conn.close()
+    _close_conn(conn)
     return [dict(r) for r in rows]
 
 def create_medication(data):
@@ -582,7 +815,7 @@ def create_medication(data):
                data.get('route'), data.get('notes')))
     conn.commit()
     new_id = c.lastrowid
-    conn.close()
+    _close_conn(conn)
     return new_id
 
 def update_medication(mid, data):
@@ -599,20 +832,20 @@ def update_medication(mid, data):
         vals.append(mid)
         conn.execute(f"UPDATE medication SET {','.join(fields)} WHERE id=?", vals)
         conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 def delete_medication(mid):
     conn = get_db()
     conn.execute("DELETE FROM medication WHERE id=?", (mid,))
     conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 # ==================== 肿瘤评估 CRUD ====================
 
 def get_tumor_assessments(patient_id):
     conn = get_db()
     rows = conn.execute("SELECT * FROM tumor_assessment WHERE patient_id=? ORDER BY eval_date", (patient_id,)).fetchall()
-    conn.close()
+    _close_conn(conn)
     return [dict(r) for r in rows]
 
 def create_tumor_assessment(data):
@@ -625,7 +858,7 @@ def create_tumor_assessment(data):
                data.get('target_lesions'), data.get('non_target_lesions'), data.get('new_lesions', 0), data.get('notes')))
     conn.commit()
     new_id = c.lastrowid
-    conn.close()
+    _close_conn(conn)
     return new_id
 
 def update_tumor_assessment(tid, data):
@@ -642,20 +875,20 @@ def update_tumor_assessment(tid, data):
         vals.append(tid)
         conn.execute(f"UPDATE tumor_assessment SET {','.join(fields)} WHERE id=?", vals)
         conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 def delete_tumor_assessment(tid):
     conn = get_db()
     conn.execute("DELETE FROM tumor_assessment WHERE id=?", (tid,))
     conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 # ==================== 不良事件 CRUD ====================
 
 def get_adverse_events(patient_id):
     conn = get_db()
     rows = conn.execute("SELECT * FROM adverse_event WHERE patient_id=? ORDER BY onset_date", (patient_id,)).fetchall()
-    conn.close()
+    _close_conn(conn)
     return [dict(r) for r in rows]
 
 def get_project_adverse_events(project_id):
@@ -672,7 +905,7 @@ def get_project_adverse_events(project_id):
         WHERE p.project_id = ?
         ORDER BY p.patient_id, a.onset_date
     """, (project_id,)).fetchall()
-    conn.close()
+    _close_conn(conn)
     return [dict(r) for r in rows]
 
 def create_adverse_event(data):
@@ -685,7 +918,7 @@ def create_adverse_event(data):
                data.get('action_taken'), data.get('serious', 0), data.get('notes')))
     conn.commit()
     new_id = c.lastrowid
-    conn.close()
+    _close_conn(conn)
     return new_id
 
 def update_adverse_event(aid, data):
@@ -702,20 +935,20 @@ def update_adverse_event(aid, data):
         vals.append(aid)
         conn.execute(f"UPDATE adverse_event SET {','.join(fields)} WHERE id=?", vals)
         conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 def delete_adverse_event(aid):
     conn = get_db()
     conn.execute("DELETE FROM adverse_event WHERE id=?", (aid,))
     conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 # ==================== PK数据 CRUD ====================
 
 def get_pk_data(patient_id):
     conn = get_db()
     rows = conn.execute("SELECT * FROM pk_data WHERE patient_id=? ORDER BY sample_date, sample_time", (patient_id,)).fetchall()
-    conn.close()
+    _close_conn(conn)
     return [dict(r) for r in rows]
 
 def create_pk_data(data):
@@ -727,7 +960,7 @@ def create_pk_data(data):
                data.get('concentration'), data.get('unit', 'ng/mL'), data.get('cycle'), data.get('notes')))
     conn.commit()
     new_id = c.lastrowid
-    conn.close()
+    _close_conn(conn)
     return new_id
 
 def update_pk_data(pkid, data):
@@ -744,20 +977,20 @@ def update_pk_data(pkid, data):
         vals.append(pkid)
         conn.execute(f"UPDATE pk_data SET {','.join(fields)} WHERE id=?", vals)
         conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 def delete_pk_data(pkid):
     conn = get_db()
     conn.execute("DELETE FROM pk_data WHERE id=?", (pkid,))
     conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 # ==================== 肿瘤指标 CRUD ====================
 
 def get_tumor_markers(patient_id):
     conn = get_db()
     rows = conn.execute("SELECT * FROM tumor_marker WHERE patient_id=? ORDER BY test_date", (patient_id,)).fetchall()
-    conn.close()
+    _close_conn(conn)
     return [dict(r) for r in rows]
 
 def create_tumor_marker(data):
@@ -769,7 +1002,7 @@ def create_tumor_marker(data):
                data.get('unit'), data.get('upper_limit'), data.get('notes')))
     conn.commit()
     new_id = c.lastrowid
-    conn.close()
+    _close_conn(conn)
     return new_id
 
 def update_tumor_marker(tmid, data):
@@ -786,13 +1019,13 @@ def update_tumor_marker(tmid, data):
         vals.append(tmid)
         conn.execute(f"UPDATE tumor_marker SET {','.join(fields)} WHERE id=?", vals)
         conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 def delete_tumor_marker(tmid):
     conn = get_db()
     conn.execute("DELETE FROM tumor_marker WHERE id=?", (tmid,))
     conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 # ==================== 自定义列 CRUD ====================
 
@@ -804,7 +1037,7 @@ def get_custom_columns(project_id, module=None):
     else:
         rows = conn.execute("SELECT * FROM custom_column WHERE project_id=? ORDER BY module, sort_order",
                             (project_id,)).fetchall()
-    conn.close()
+    _close_conn(conn)
     return [dict(r) for r in rows]
 
 def create_custom_column(data):
@@ -816,27 +1049,107 @@ def create_custom_column(data):
                data.get('column_type', 'text'), data.get('options'), data.get('sort_order', 0)))
     conn.commit()
     new_id = c.lastrowid
-    conn.close()
+    _close_conn(conn)
     return new_id
 
 def delete_custom_column(ccid):
     conn = get_db()
     conn.execute("DELETE FROM custom_column WHERE id=?", (ccid,))
     conn.commit()
-    conn.close()
+    _close_conn(conn)
+
+# ==================== 按项目批量查询（性能优化：消除 N+1） ====================
+
+def _group_by_patient(rows):
+    """将 [{patient_id, ...}] 按 patient_id 分组为 {patient_id: [row,...]}。"""
+    out = {}
+    for r in rows:
+        out.setdefault(r['patient_id'], []).append(dict(r))
+    return out
+
+def get_medications_by_project(project_id):
+    """一次性取出项目下全部用药并按 patient_id 分组（供导出/图表批量使用）。"""
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT * FROM medication m
+           JOIN patient p ON m.patient_id = p.id
+           WHERE p.project_id = ?
+           ORDER BY m.patient_id, m.actual_date, m.cycle, m.day_in_cycle""",
+        (project_id,)).fetchall()
+    _close_conn(conn)
+    return _group_by_patient(rows)
+
+def get_tumor_assessments_by_project(project_id):
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT * FROM tumor_assessment t
+           JOIN patient p ON t.patient_id = p.id
+           WHERE p.project_id = ?
+           ORDER BY t.patient_id, t.eval_date""",
+        (project_id,)).fetchall()
+    _close_conn(conn)
+    return _group_by_patient(rows)
+
+def get_adverse_events_by_project(project_id):
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT * FROM adverse_event a
+           JOIN patient p ON a.patient_id = p.id
+           WHERE p.project_id = ?
+           ORDER BY a.patient_id, a.onset_date""",
+        (project_id,)).fetchall()
+    _close_conn(conn)
+    return _group_by_patient(rows)
+
+def get_pk_data_by_project(project_id):
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT * FROM pk_data k
+           JOIN patient p ON k.patient_id = p.id
+           WHERE p.project_id = ?
+           ORDER BY k.patient_id, k.sample_date, k.sample_time""",
+        (project_id,)).fetchall()
+    _close_conn(conn)
+    return _group_by_patient(rows)
+
+def get_tumor_markers_by_project(project_id):
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT * FROM tumor_marker tm
+           JOIN patient p ON tm.patient_id = p.id
+           WHERE p.project_id = ?
+           ORDER BY tm.patient_id, tm.test_date""",
+        (project_id,)).fetchall()
+    _close_conn(conn)
+    return _group_by_patient(rows)
 
 # ==================== 甘特图事件聚合 ====================
 
-def get_events_for_gantt(project_id, year, month):
-    """获取指定项目、年月下所有患者的日历事件（用于甘特图展示）
-    内部转换为日期范围调用 get_events_for_gantt_range，避免重复代码
+def get_gantt_date_range(project_id):
+    """一次性聚合项目内全部事件与患者入组日期的最早/最晚日期（性能优化：避免全量拉取后在 Python 里再扫一遍）。
+    返回 (earliest, latest) 字符串，若无任何日期则返回 (None, None)。
     """
-    # 计算该月第一天和最后一天
-    import calendar as cal_module
-    first_day = f"{year}-{month:02d}-01"
-    last_day_num = cal_module.monthrange(year, month)[1]
-    last_day = f"{year}-{month:02d}-{last_day_num}"
-    return get_events_for_gantt_range(project_id, first_day, last_day)
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT MIN(d) AS earliest, MAX(d) AS latest FROM (
+            SELECT m.actual_date AS d FROM medication m JOIN patient p ON m.patient_id=p.id WHERE p.project_id=?
+            UNION ALL
+            SELECT t.eval_date FROM tumor_assessment t JOIN patient p ON t.patient_id=p.id WHERE p.project_id=?
+            UNION ALL
+            SELECT a.onset_date FROM adverse_event a JOIN patient p ON a.patient_id=p.id WHERE p.project_id=?
+            UNION ALL
+            SELECT a.end_date FROM adverse_event a JOIN patient p ON a.patient_id=p.id WHERE p.project_id=? AND a.end_date IS NOT NULL
+            UNION ALL
+            SELECT k.sample_date FROM pk_data k JOIN patient p ON k.patient_id=p.id WHERE p.project_id=?
+            UNION ALL
+            SELECT tm.test_date FROM tumor_marker tm JOIN patient p ON tm.patient_id=p.id WHERE p.project_id=?
+            UNION ALL
+            SELECT p.enroll_date FROM patient p WHERE p.project_id=?
+        )
+    """, (project_id, project_id, project_id, project_id, project_id, project_id, project_id)).fetchone()
+    _close_conn(conn)
+    return (rows['earliest'], rows['latest'])
+
 
 def get_events_for_gantt_range(project_id, start_date, end_date):
     """获取指定项目、日期范围内所有患者的日历事件（用于甘特图展示）
@@ -869,6 +1182,7 @@ def get_events_for_gantt_range(project_id, start_date, end_date):
                 'type': 'drug', 'id': r['id'], 'patient_id': r['patient_id'],
                 'pid_text': r['pid_text'],
                 'date': r['actual_date'], 'actual_date': r['actual_date'],
+                'cycle': r['cycle'],
                 'label': f"{r['drug_name']} {r['cycle'] or ''}",
                 'detail': f"剂量: {r['dose']}{r['dose_unit'] or ''}"
             })
@@ -997,7 +1311,7 @@ def get_events_for_gantt_range(project_id, start_date, end_date):
                         'detail': detail_text
                     })
 
-    conn.close()
+    _close_conn(conn)
     return events
 
 
@@ -1006,7 +1320,7 @@ def get_events_for_gantt_range(project_id, start_date, end_date):
 def get_dose_groups(project_id):
     conn = get_db()
     rows = conn.execute("SELECT * FROM dose_group WHERE project_id=? ORDER BY sort_order, id", (project_id,)).fetchall()
-    conn.close()
+    _close_conn(conn)
     return [dict(r) for r in rows]
 
 def create_dose_group(data):
@@ -1018,7 +1332,7 @@ def create_dose_group(data):
                data.get('sort_order', 0)))
     conn.commit()
     new_id = c.lastrowid
-    conn.close()
+    _close_conn(conn)
     return new_id
 
 def update_dose_group(dgid, data):
@@ -1033,13 +1347,13 @@ def update_dose_group(dgid, data):
         vals.append(dgid)
         conn.execute(f"UPDATE dose_group SET {','.join(fields)} WHERE id=?", vals)
         conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 def delete_dose_group(dgid):
     conn = get_db()
     conn.execute("DELETE FROM dose_group WHERE id=?", (dgid,))
     conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 
 # ==================== 癌肿类型 CRUD ====================
@@ -1047,7 +1361,7 @@ def delete_dose_group(dgid):
 def get_cancer_types(project_id):
     conn = get_db()
     rows = conn.execute("SELECT * FROM cancer_type WHERE project_id=? ORDER BY sort_order, id", (project_id,)).fetchall()
-    conn.close()
+    _close_conn(conn)
     return [dict(r) for r in rows]
 
 def create_cancer_type(data):
@@ -1057,7 +1371,7 @@ def create_cancer_type(data):
               (data['project_id'], data.get('name'), data.get('sort_order', 0)))
     conn.commit()
     new_id = c.lastrowid
-    conn.close()
+    _close_conn(conn)
     return new_id
 
 def update_cancer_type(ctid, data):
@@ -1072,13 +1386,13 @@ def update_cancer_type(ctid, data):
         vals.append(ctid)
         conn.execute(f"UPDATE cancer_type SET {','.join(fields)} WHERE id=?", vals)
         conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 def delete_cancer_type(ctid):
     conn = get_db()
     conn.execute("DELETE FROM cancer_type WHERE id=?", (ctid,))
     conn.commit()
-    conn.close()
+    _close_conn(conn)
 
 
 # ==================== Demo 数据生成 ====================
@@ -1092,13 +1406,13 @@ def generate_demo_data(project_id):
     # 检查项目是否存在
     proj = conn.execute("SELECT id FROM project WHERE id=?", (project_id,)).fetchone()
     if not proj:
-        conn.close()
+        _close_conn(conn)
         return {'error': '项目不存在'}
 
     # 检查是否已有患者数据（避免重复生成）
     existing = conn.execute("SELECT COUNT(*) FROM patient WHERE project_id=?", (project_id,)).fetchone()[0]
     if existing > 0:
-        conn.close()
+        _close_conn(conn)
         return {'error': f'该项目已有 {existing} 例患者，请先清空再生成Demo数据'}
 
     today = date.today()
@@ -1137,6 +1451,7 @@ def generate_demo_data(project_id):
         ('007', 'treatment', -52,  63, '男', 'NSCLC', 1, '10mg/kg', 1),
         ('008', 'treatment', -30,  45, '女', 'NSCLC', 0, '10mg/kg', 1),
     ]
+    enroll_offset_map = {p[0]: p[2] for p in patients_spec}
     pat_ids = {}
     for pid, status, offset, age, sex, ctype, ecog, dgrp, dlt in patients_spec:
         enroll_date = (today + timedelta(days=offset)).isoformat()
@@ -1226,7 +1541,7 @@ def generate_demo_data(project_id):
     }
     for pid, (baseline_sod, entries) in ta_specs.items():
         db_id = pat_ids[pid]
-        enroll_offset = dict((p[0], p[2]) for p in patients_spec)[pid]
+        enroll_offset = enroll_offset_map[pid]
         enroll_date = today + timedelta(days=enroll_offset)
         for i, (weeks, best_resp, sod, confirmed) in enumerate(entries):
             eval_date = (enroll_date + timedelta(weeks=weeks)).isoformat()
@@ -1253,7 +1568,7 @@ def generate_demo_data(project_id):
     ]
     for pid, term, weeks, dur, grade, sev, outcome, relation, action, serious in ae_specs:
         db_id = pat_ids[pid]
-        enroll_offset = dict((p[0], p[2]) for p in patients_spec)[pid]
+        enroll_offset = enroll_offset_map[pid]
         onset = (today + timedelta(days=enroll_offset) + timedelta(weeks=weeks)).isoformat()
         end = (today + timedelta(days=enroll_offset) + timedelta(weeks=weeks) + timedelta(days=dur)).isoformat() if dur > 0 else None
         # 只插入不晚于今天的AE
@@ -1275,7 +1590,7 @@ def generate_demo_data(project_id):
     }
     for pid, conclist in pk_specs.items():
         db_id = pat_ids[pid]
-        enroll_offset = dict((p[0], p[2]) for p in patients_spec)[pid]
+        enroll_offset = enroll_offset_map[pid]
         pk_date = (today + timedelta(days=enroll_offset)).isoformat()
         for i, (tp, conc) in enumerate(zip(pk_timepoints, conclist)):
             c.execute("""INSERT INTO pk_data (patient_id, sample_date, sample_time, time_point, concentration, unit, cycle)
@@ -1295,7 +1610,7 @@ def generate_demo_data(project_id):
     }
     for pid, entries in marker_specs.items():
         db_id = pat_ids[pid]
-        enroll_offset = dict((p[0], p[2]) for p in patients_spec)[pid]
+        enroll_offset = enroll_offset_map[pid]
         for weeks, marker_name, value in entries:
             test_date = (today + timedelta(days=enroll_offset) + timedelta(weeks=weeks)).isoformat()
             if today + timedelta(days=enroll_offset) + timedelta(weeks=weeks) <= today + timedelta(days=7):
@@ -1303,7 +1618,7 @@ def generate_demo_data(project_id):
                              VALUES (?,?,?,?,?,?)""",
                           (db_id, test_date, marker_name, value, 'ng/mL', 5.0))
     conn.commit()
-    conn.close()
+    _close_conn(conn)
 
     return {
         'ok': True,

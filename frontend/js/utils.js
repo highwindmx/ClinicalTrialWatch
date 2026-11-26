@@ -45,7 +45,8 @@ window.withBtnLoading = withBtnLoading;
 
 // ==================== Toast 通知 ====================
 
-function showToast(message, type = 'error', duration = 3000) {
+// 第三个参数保留兼容但已忽略：toast 不再自动消失，只能点击关闭
+function showToast(message, type = 'error', _duration = 0) {
     // 创建容器（如果不存在）
     let container = document.getElementById('toastContainer');
     if (!container) {
@@ -82,17 +83,7 @@ function showToast(message, type = 'error', duration = 3000) {
     // 添加到容器
     container.appendChild(toast);
 
-    // 自动消失
-    if (duration > 0) {
-        setTimeout(() => {
-            if (toast.parentElement) {
-                toast.classList.add('toast-exit');
-                setTimeout(() => {
-                    if (toast.parentElement) toast.remove();
-                }, 300);
-            }
-        }, duration);
-    }
+    // 不自动消失：点击 toast 本身或右上角 × 才会关闭
 
     return toast;
 }

@@ -36,6 +36,7 @@
             <button class="main-tab" data-tab="spider">蜘蛛图</button>
             <button class="main-tab" data-tab="tumorMarker">肿瘤指标</button>
             <button class="main-tab" data-tab="ae">AE汇总</button>
+            <button class="main-tab" data-tab="tools">查询与计算</button>
             <!-- 项目配置Tab入口已移至左上角⚙按钮，此处隐藏 -->
             <button class="main-tab" data-tab="config" style="display:none">项目配置</button>
         </div>
@@ -61,6 +62,7 @@
     <div class="tab-panel active" id="panel-calendar">
         <div class="toolbar">
             <div class="toolbar-group">
+                <button class="btn btn-sm" id="enrollScanCalendarBtn" title="扫描入组表，自动新增参与者">🔄 扫描入组表</button>
                 <button class="btn btn-sm" id="todayBtn">📍 今天</button>
             </div>
             <div class="toolbar-divider"></div>
@@ -88,6 +90,7 @@
             <span class="sort-chip active" data-sort="patient_id">编号</span>
             <span class="sort-chip" data-sort="dose_group">剂量组</span>
             <span class="sort-chip" data-sort="enroll_date">入组日期</span>
+            <span class="sort-chip" data-sort="status">在组状态</span>
             <span class="sort-chip" data-sort="cancer_type">癌肿</span>
         </div>
         <!-- 甘特图区域 -->
@@ -127,6 +130,7 @@
                 <option value="">全部癌肿</option>
             </select>
         </div>
+        <div id="waterfallLegend" class="chart-legend-bar"></div>
         <div class="chart-panel"><div id="chartWaterfall" style="height:560px"></div></div>
     </div>
 
@@ -262,6 +266,10 @@
                         <label style="font-size:13px;color:#374151;min-width:70px">项目编号:</label>
                         <input type="text" id="configProjCode" class="form-input" style="flex:1;max-width:300px" onchange="ConfigPanel.saveProjectCode(this.value)">
                     </div>
+                    <div style="display:flex;align-items:center;gap:10px">
+                        <label style="font-size:13px;color:#374151;min-width:70px">默认药物:</label>
+                        <input type="text" id="configDefaultDrug" class="form-input" style="flex:1;max-width:300px" placeholder="如 IN10028，留空则用项目编号" onchange="ConfigPanel.saveDefaultDrugName(this.value)">
+                    </div>
                 </div>
             </div>
             <!-- DLT观察期 -->
@@ -271,8 +279,7 @@
                     <label style="font-size:13px;color:#374151">观察天数:</label>
                     <input type="number" id="dltDaysInput" min="1" max="365" value="21"
                         style="width:70px;padding:4px 8px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;outline:none"
-                        title="DLT观察期天数，默认21天">
-                    <button class="btn btn-primary btn-sm" onclick="ConfigPanel.saveDLTDays()">保存</button>
+                        title="DLT观察期天数，默认21天" onchange="ConfigPanel.saveDLTDays()">
                     <span id="dltSaveMsg" style="font-size:12px;color:#22c55e;display:none">✓ 已保存</span>
                 </div>
             </div>
@@ -306,11 +313,73 @@
                     <tbody id="cancerTypeBody"></tbody>
                 </table>
             </div>
+            <!-- 入组表自动同步 -->
+            <div class="config-section">
+                <h3>入组表自动同步</h3>
+                <p style="font-size:12px;color:#6b7280;margin:0 0 10px;line-height:1.6">
+                    监控指定 xlsx 的「入组」分页：新增筛选号自动建参与者；剂量组忽略“回填/储备”字样；癌种原样写入（可在上方癌肿类型管理中再调整）。<br>
+                    C1D1 用药日期取「入组时间/日期」，药物名称取上方「默认药物」，剂量取剂量组数字（如 50mg→50）；若 xlsx 有「基线肿评日期」「基线靶病灶SOD」列则同步写入基线肿评（已存在的不覆盖）。<br>
+                    自动监听只盯「筛选号」是否有新增/删除；其他列改动不会自动同步，需点日历页的「🔄 扫描入组表」。
+                </p>
+                <div style="display:flex;flex-direction:column;gap:8px;padding:4px 0">
+                    <div style="display:flex;align-items:center;gap:10px">
+                        <label style="font-size:13px;color:#374151;min-width:96px">xlsx 路径:</label>
+                        <input type="text" id="enrollXlsxPath" class="form-input" style="flex:1;max-width:560px" placeholder="D:\...\IN10028-001 初筛跟踪.xlsx">
+                    </div>
+                    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                        <label style="font-size:13px;color:#374151;min-width:96px">分页名称:</label>
+                        <input type="text" id="enrollSheetName" class="form-input" style="width:120px" value="入组">
+                        <label style="font-size:13px;color:#374151;display:flex;align-items:center;gap:5px;margin-left:8px">
+                            <input type="checkbox" id="enrollWatchEnabled" checked> 自动监听文件变化
+                        </label>
+                        <button class="btn btn-primary btn-sm" id="enrollSaveBtn">保存配置</button>
+                        <button class="btn btn-sm" id="enrollDryRunBtn">试扫（不写库）</button>
+                    </div>
+                    <div id="enrollSyncStatus" style="font-size:12px;color:#6b7280;line-height:1.6;min-height:18px"></div>
+                    <div id="enrollSyncPreview" style="font-size:12px;color:#374151;line-height:1.6"></div>
+                    <div style="font-size:11px;color:#9ca3af;line-height:1.6">
+                        可识别表头：筛选号 / 参与者缩写 / 剂量组 / 性别 / 年龄 / ECOG / 癌种 / 入组时间 / 基线肿评日期 / 基线靶病灶SOD（C1D1 日期取入组时间，无需单列）
+                    </div>
+                </div>
+            </div>
             <!-- 危险操作 -->
             <div class="config-section config-danger">
                 <h3>危险操作</h3>
                 <p style="font-size:13px;color:#6b7280;margin-bottom:8px">删除项目将同时删除该项目下所有患者及临床数据（用药、疗评、AE、PK、肿瘤指标等），此操作不可恢复。</p>
                 <button class="btn btn-danger btn-sm" onclick="ConfigPanel.deleteProject()">删除此项目</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== 查询与计算Tab ===== -->
+    <div class="tab-panel" id="panel-tools">
+        <div class="tools-layout">
+            <div class="tools-sidebar" id="toolsSidebar">
+                <button class="tools-nav active" data-tool="codon">遗传密码</button>
+                <button class="tools-nav" data-tool="calc">计算工具</button>
+            </div>
+            <div class="tools-main">
+                <div class="tools-pane active" id="pane-codon">
+                    <div class="codon-toolbar" style="padding:8px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #e5e7eb;flex-wrap:wrap">
+                        <input type="text" id="codonSearch" class="form-input" placeholder="搜索 密码子 / 氨基酸(单字母·三字母·中文)…" style="width:300px;font-size:13px">
+                        <label style="font-size:13px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="codonOnlyStart"> 仅看起始</label>
+                        <label style="font-size:13px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="codonOnlyStop"> 仅看终止</label>
+                        <div style="flex:1"></div>
+                        <span id="codonCount" style="font-size:12px;color:#6b7280"></span>
+                    </div>
+                    <div style="overflow:auto;max-height:calc(100vh - 170px);padding:0 16px 16px">
+                        <table class="config-table codon-table" id="codonTable">
+                            <thead><tr><th>DNA(编码链)</th><th>RNA</th><th>单字母</th><th>三字母</th><th>中文名</th><th>备注</th></tr></thead>
+                            <tbody id="codonTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="tools-pane" id="pane-calc">
+                    <div class="calc-subtabs" id="calcSubtabs">
+                        <button class="calc-subtab active" data-ctab="interval">时间间隔计算</button>
+                    </div>
+                    <div class="calc-body" id="calcBody"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -364,6 +433,22 @@
                 <div class="sp-section-header"><h4>肿瘤指标</h4><button class="btn btn-sm" onclick="SlidePanel.addMarker()">+ 添加</button></div>
                 <div style="overflow-x:auto"><table class="sp-table"><thead><tr><th>日期</th><th>指标</th><th>值</th><th>单位</th><th>上限</th><th>操作</th></tr></thead><tbody id="spMarkerBody"></tbody></table></div>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- 入组表扫描结果弹窗 -->
+<div id="enrollScanModal" class="modal-overlay hidden">
+    <div class="modal" style="max-width:520px">
+        <div class="modal-header">
+            <h3>入组表扫描结果</h3>
+            <button class="modal-close" onclick="Calendar.closeModal('enrollScanModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div id="enrollScanResult" style="font-size:13px;line-height:1.9;white-space:pre-wrap;word-break:break-all;color:#374151"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-primary" onclick="Calendar.closeModal('enrollScanModal')">知道了</button>
         </div>
     </div>
 </div>
@@ -435,5 +520,7 @@
 <script src="/js/calendar.js"></script>
 <script src="/js/slidepanel.js"></script>
 <script src="/js/config.js"></script>
+<script src="/js/codon.js"></script>
+<script src="/js/calc.js"></script>
 </body>
 </html>

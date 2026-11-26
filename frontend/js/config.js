@@ -9,20 +9,24 @@ const ConfigPanel = {
 
     async load() {
         if (!Calendar.currentProject) return;
-        // 三个 API 并行加载，显著缩短配置面板打开延迟
-        const [doseGroups, cancerTypes, projectData] = await Promise.all([
+        // 四个 API 并行加载，显著缩短配置面板打开延迟
+        const [doseGroups, cancerTypes, projectData, syncCfg] = await Promise.all([
             api.getDoseGroups(Calendar.currentProject),
             api.getCancerTypes(Calendar.currentProject),
-            api.getProject(Calendar.currentProject).catch(e => { console.warn('加载项目信息失败', e); return null; })
+            api.getProject(Calendar.currentProject).catch(e => { console.warn('加载项目信息失败', e); return null; }),
+            api.getEnrollmentSync(Calendar.currentProject).catch(e => { console.warn('加载入组同步配置失败', e); return null; })
         ]);
         this.doseGroups = doseGroups;
         this.cancerTypes = cancerTypes;
         this.currentProjectData = projectData;
+        this.enrollSyncConfig = syncCfg;
         if (projectData) {
             const nameInput = document.getElementById('configProjName');
             if (nameInput) nameInput.value = projectData.name || '';
             const codeInput = document.getElementById('configProjCode');
             if (codeInput) codeInput.value = projectData.code || '';
+            const drugInput = document.getElementById('configDefaultDrug');
+            if (drugInput) drugInput.value = projectData.default_drug_name || '';
             const dltInput = document.getElementById('dltDaysInput');
             if (dltInput) dltInput.value = projectData.dlt_days ?? 21;
             const calcBaseSelect = document.getElementById('assessmentCalcBase');
@@ -30,6 +34,7 @@ const ConfigPanel = {
         }
         this.renderDoseGroups();
         this.renderCancerTypes();
+        this.renderEnrollSync();
         this.bindEvents();
     },
 
@@ -40,6 +45,8 @@ const ConfigPanel = {
 
         document.getElementById('addDoseGroupBtn').addEventListener('click', () => this.addDoseGroup());
         document.getElementById('addCancerTypeBtn').addEventListener('click', () => this.addCancerType());
+        document.getElementById('enrollSaveBtn').addEventListener('click', () => this.saveEnrollmentConfig());
+        document.getElementById('enrollDryRunBtn').addEventListener('click', () => this.scanEnrollment(true));
     },
 
     // ============ 项目基本信息 ============
@@ -50,6 +57,9 @@ const ConfigPanel = {
     },
     async saveProjectCode(value) {
         await api.updateProject(Calendar.currentProject, { code: value });
+    },
+    async saveDefaultDrugName(value) {
+        await api.updateProject(Calendar.currentProject, { default_drug_name: value.trim() || null });
     },
 
     // ============ DLT观察期 ============
@@ -211,13 +221,113 @@ const ConfigPanel = {
         this.renderCancerTypes();
     },
 
+    // ============ 入组表自动同步 ============
+    renderEnrollSync() {
+        const cfg = this.enrollSyncConfig;
+        if (!cfg) return;
+        const pathInput = document.getElementById('enrollXlsxPath');
+        const sheetInput = document.getElementById('enrollSheetName');
+        const enabledInput = document.getElementById('enrollWatchEnabled');
+        const status = document.getElementById('enrollSyncStatus');
+        const preview = document.getElementById('enrollSyncPreview');
+        if (pathInput) pathInput.value = cfg.xlsx_path || '';
+        if (sheetInput) sheetInput.value = cfg.sheet_name || '入组';
+        if (enabledInput) enabledInput.checked = !!cfg.enabled;
+
+        if (status) {
+            if (cfg.last_scan_at && cfg.last_result) {
+                const r = cfg.last_result;
+                const createdNames = r.created_screenings || [];
+                status.innerHTML = '上次扫描：' + this.esc(cfg.last_scan_at) +
+                    ' ｜ 新增参与者 ' + (r.created || 0) +
+                    (createdNames.length ? '（' + this.esc(createdNames.join('、')) + '）' : '') +
+                    ' ｜ C1D1 ' + (r.medications || 0) +
+                    ' ｜ 基线肿评 ' + (r.assessments || 0) +
+                    ' ｜ 错误 ' + ((r.errors || []).length) +
+                    ((r.warnings || []).length ? ' ｜ 提示：' + this.esc(r.warnings.join('；')) : '');
+                status.style.color = (r.errors || []).length ? '#dc2626' : '#6b7280';
+            } else {
+                status.textContent = '尚未扫描。启动时不自动扫描；保存配置后监听文件变化，或点日历页「扫描入组表」。';
+                status.style.color = '#6b7280';
+            }
+        }
+        if (preview) {
+            if (cfg.preview_error) {
+                preview.textContent = '预览失败：' + cfg.preview_error;
+                preview.style.color = '#dc2626';
+            } else if (cfg.preview) {
+                const cols = Object.keys(cfg.preview.columns || {});
+                preview.textContent = '识别到 ' + cfg.preview.row_count + ' 条有效记录；已识别列：' +
+                    (cols.length ? cols.join('、') : '无');
+                preview.style.color = '#6b7280';
+            } else {
+                preview.textContent = '';
+            }
+        }
+    },
+
+    async saveEnrollmentConfig() {
+        const path = (document.getElementById('enrollXlsxPath').value || '').trim();
+        const sheet = (document.getElementById('enrollSheetName').value || '').trim() || '入组';
+        const enabled = !!document.getElementById('enrollWatchEnabled').checked;
+        const status = document.getElementById('enrollSyncStatus');
+        try {
+            await api.saveEnrollmentSync(Calendar.currentProject, {
+                xlsx_path: path, sheet_name: sheet, enabled: enabled
+            });
+            status.textContent = '配置已保存' + (enabled ? '，监听已生效' : '，监听已关闭');
+            status.style.color = '#16a34a';
+            this.enrollSyncConfig = await api.getEnrollmentSync(Calendar.currentProject);
+            this.renderEnrollSync();
+            status.textContent = '配置已保存' + (enabled ? '，监听已生效' : '，监听已关闭');
+            status.style.color = '#16a34a';
+        } catch (e) {
+            status.textContent = '保存失败：' + (e.message || '未知错误');
+            status.style.color = '#dc2626';
+        }
+    },
+
+    async scanEnrollment(dryRun) {
+        const btn = document.getElementById(dryRun ? 'enrollDryRunBtn' : 'enrollScanBtn');
+        const status = document.getElementById('enrollSyncStatus');
+        const original = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = '扫描中…'; }
+        status.textContent = '正在读取入组表…';
+        status.style.color = '#6b7280';
+        try {
+            const r = await api.scanEnrollment(Calendar.currentProject, { dry_run: !!dryRun });
+            const prefix = dryRun ? '【试扫】' : '';
+            const names = dryRun ? (r.would_create_screenings || []) : (r.created_screenings || []);
+            const createdLabel = dryRun ? '预计新增 ' + (r.would_create || 0) : '新增参与者 ' + r.created;
+            status.textContent = prefix + '有效记录 ' + r.rows + ' 条；' + createdLabel +
+                (names.length ? '（' + names.join('、') + '）' : '') +
+                ' ｜ C1D1 ' + r.medications + ' ｜ 基线肿评 ' + r.assessments +
+                ' ｜ 库中已存在 ' + r.existing +
+                (r.skipped ? ' ｜ ' + r.reason : '') +
+                (r.warnings && r.warnings.length ? ' ｜ 提示：' + r.warnings.join('；') : '') +
+                (r.errors && r.errors.length ? ' ｜ 错误：' + r.errors.join('；') : '');
+            status.style.color = (r.errors && r.errors.length) ? '#dc2626' : '#16a34a';
+            if (!dryRun) {
+                this.enrollSyncConfig = await api.getEnrollmentSync(Calendar.currentProject);
+                this.renderEnrollSync();
+                status.style.color = (r.errors && r.errors.length) ? '#dc2626' : '#16a34a';
+                await Calendar.refresh();
+            }
+        } catch (e) {
+            status.textContent = '扫描失败：' + (e.message || '未知错误');
+            status.style.color = '#dc2626';
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = original; }
+        }
+    },
+
     // ============ 删除项目 ============
     async deleteProject() {
         const proj = this.currentProjectData;
         const name = proj ? proj.name : '此项目';
-        if (!confirm('⚠️ 确认删除项目「' + name + '」？\n\n将同时删除该项目下所有患者及临床数据，此操作不可恢复！')) return;
+        if (!confirm('⚠️ 确认删除项目「' + this.esc(name) + '」？\n\n将同时删除该项目下所有患者及临床数据，此操作不可恢复！')) return;
         // 二次确认
-        if (!confirm('再次确认：删除项目「' + name + '」及所有关联数据？')) return;
+        if (!confirm('再次确认：删除项目「' + this.esc(name) + '」及所有关联数据？')) return;
         try {
             await api.deleteProject(Calendar.currentProject);
             Calendar.currentProject = null;
@@ -233,7 +343,7 @@ const ConfigPanel = {
                 Calendar.showEmpty();
             }
         } catch(e) {
-            alert('删除项目失败: ' + (e.message || '未知错误'));
+            alert('删除项目失败: ' + this.esc(e.message || '未知错误'));
         }
     },
 

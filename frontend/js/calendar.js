@@ -42,7 +42,7 @@ const Calendar = {
         await this.loadProjects();
         this.bindEvents();
         const savedTab = localStorage.getItem('ct-active-tab');
-        const validTabs = ['calendar', 'baseline', 'waterfall', 'swimmer', 'spider', 'tumorMarker', 'ae', 'config'];
+        const validTabs = ['calendar', 'baseline', 'waterfall', 'swimmer', 'spider', 'tumorMarker', 'ae', 'tools', 'config'];
         const tabToRestore = (savedTab && validTabs.includes(savedTab)) ? savedTab : 'calendar';
         if (this.projects && this.projects.length > 0) {
             // 优先从 localStorage 恢复上次选中的项目
@@ -56,6 +56,27 @@ const Calendar = {
             this.showEmpty();
         }
         this.updateZoomUI();
+        // watchdog 自动同步通知：每 15 秒检查一次
+        if (!this._noticeTimer) {
+            this._noticeTimer = setInterval(() => this.pollEnrollmentNotice(), 15000);
+        }
+    },
+
+    /** watchdog 自动同步有新参与者时提示（通知读后即焚） */
+    async pollEnrollmentNotice() {
+        if (!this.currentProject) return;
+        try {
+            const r = await api.getEnrollmentNotice(this.currentProject);
+            const n = r && r.notice;
+            if (!n) return;
+            showToast('入组表自动同步：新增 ' + (n.created || 0) + ' 例（' + (n.screenings || []).join('、') + '）', 'success');
+            await this.refresh();
+            if (this.currentTab === 'calendar' && ((n.patient_ids || []).length || (n.screenings || []).length)) {
+                this.flashNewPatients(n.screenings || [], n.patient_ids || []);
+            }
+        } catch (e) {
+            // 轮询失败静默，不影响主流程
+        }
     },
 
     /** 加载项目列表 */
@@ -94,6 +115,7 @@ const Calendar = {
 
         // 日历导航
         document.getElementById('todayBtn').addEventListener('click', () => this.goToday());
+        document.getElementById('enrollScanCalendarBtn').addEventListener('click', () => this.scanEnrollmentFromCalendar());
 
         // 缩放
         document.getElementById('zoomInBtn').addEventListener('click', () => this.zoomIn());
@@ -183,6 +205,7 @@ const Calendar = {
             case 'spider': await Charts.loadSpider(); break;
             case 'tumorMarker': await Charts.loadTumorMarkerTrend(); break;
             case 'ae': await AE.loadAE(); break;
+            case 'tools': this.renderTools(); break;
             case 'config': await ConfigPanel.load(); break;
         }
     },
@@ -195,6 +218,9 @@ const Calendar = {
         this.events = data.events || [];
         this.dateRange = data.date_range || {};
         this.doseColors = data.dose_colors || {};
+        this.doseGroupOrder = data.dose_group_order || {};
+        this.doseGroupInterval = data.dose_group_interval || {};
+        this.medInterval = (data.medication_interval != null) ? data.medication_interval : 21;
         this.dltDays = (data.dlt_days != null) ? data.dlt_days : 21;
         this._buildEventIndex();
         this.renderCurrentView();
@@ -212,6 +238,29 @@ const Calendar = {
 
     renderCurrentView() {
         this.renderGantt();
+    },
+
+    /** 查询与计算页：左侧tab切换（遗传密码 / 计算工具） */
+    renderTools() {
+        const navs = document.querySelectorAll('#toolsSidebar .tools-nav');
+        navs.forEach((btn) => {
+            btn.onclick = () => {
+                this.currentTool = btn.dataset.tool;
+                this._activateTool();
+            };
+        });
+        if (!this.currentTool) this.currentTool = 'codon';
+        this._activateTool();
+    },
+    _activateTool() {
+        document.querySelectorAll('#toolsSidebar .tools-nav').forEach((b) => {
+            b.classList.toggle('active', b.dataset.tool === this.currentTool);
+        });
+        document.querySelectorAll('.tools-pane').forEach((p) => {
+            p.classList.toggle('active', p.id === 'pane-' + this.currentTool);
+        });
+        if (this.currentTool === 'codon') CodonTable.render();
+        else if (this.currentTool === 'calc') CalcApp.render();
     },
 
     /** 缩放列宽 - 5级离散切换 */
@@ -239,6 +288,74 @@ const Calendar = {
     },
 
     /** 滚动到今天 - 居中显示 */
+    /** 日历页一键扫描入组表：结果弹窗展示，新增行闪动提示 */
+    async scanEnrollmentFromCalendar() {
+        if (!this.currentProject) { showToast('请先选择项目', 'error'); return; }
+        const btn = document.getElementById('enrollScanCalendarBtn');
+        const original = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = '扫描中…'; }
+        try {
+            const r = await api.scanEnrollment(this.currentProject, {});
+            const names = r.created_screenings || [];
+            const ids = r.created_patient_ids || [];
+            const lines = [
+                '有效记录：' + r.rows + ' 条',
+                '新增参与者：' + r.created + (names.length ? '（' + names.join('、') + '）' : ''),
+                'C1D1 用药：' + r.medications + ' ｜ 基线肿评：' + r.assessments + ' ｜ 库中已存在：' + r.existing
+            ];
+            if (r.skipped) lines.push('状态：' + r.reason);
+            if (r.warnings && r.warnings.length) lines.push('提示：' + r.warnings.join('；'));
+            if (r.errors && r.errors.length) lines.push('错误：' + r.errors.join('；'));
+            const box = document.getElementById('enrollScanResult');
+            if (box) {
+                box.textContent = lines.join('\n');
+                box.style.color = (r.errors && r.errors.length) ? '#dc2626' : '#374151';
+            }
+            // 先刷新并高亮，再显示弹窗；关闭弹窗时会重新闪一次
+            await this.refresh();
+            if (names.length || ids.length) {
+                this.flashNewPatients(names, ids);
+            } else {
+                showToast('本次无新增参与者', 'info');
+            }
+            setTimeout(() => {
+                const modal = document.getElementById('enrollScanModal');
+                if (modal) modal.classList.remove('hidden');
+            }, 500);
+        } catch (e) {
+            showToast('扫描失败：' + (e.message || '未知错误'), 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = original; }
+        }
+    },
+
+    /** 高亮新增行：优先按后端返回的 patient.id 精确定位，找不到再按筛选号回退 */
+    flashNewPatients(screenings, patientIds) {
+        const ids = new Set((patientIds || []).map(String));
+        const wanted = (screenings || []).map(s => String(s).trim()).filter(Boolean);
+        if (!ids.size && !wanted.length) return;
+        const rows = [];
+        document.querySelectorAll('.gantt-table tbody tr.patient-row').forEach(row => {
+            let hit = ids.has(String(row.dataset.patientId));
+            if (!hit && wanted.length) {
+                const cell = row.querySelector('.patient-id');
+                const text = cell ? cell.textContent.trim() : '';
+                hit = wanted.some(s => text.indexOf(s) === 0);
+            }
+            if (hit) rows.push(row);
+        });
+        if (!rows.length) return;
+        this._lastFlash = { screenings: wanted, ids: Array.from(ids) };
+        rows.forEach(row => row.classList.remove('patient-flash'));
+        void document.body.offsetHeight;  // 强制重排，保证动画能重新播放
+        rows.forEach(row => row.classList.add('patient-flash'));
+        try { rows[0].scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { /* 忽略 */ }
+        clearTimeout(this._flashTimer);
+        this._flashTimer = setTimeout(() => {
+            document.querySelectorAll('.patient-flash').forEach(row => row.classList.remove('patient-flash'));
+        }, 10000);
+    },
+
     goToday() {
         const now = new Date();
         const yy = now.getFullYear(), mm = String(now.getMonth() + 1).padStart(2, '0'), dd = String(now.getDate()).padStart(2, '0');
@@ -267,13 +384,33 @@ const Calendar = {
     /** 排序患者 */
     getSortedPatients() {
         let list = [...this.patients];
+        const orderMap = this.doseGroupOrder || {};
+        const sortBy = this.sortBy;
+        // 剂量组按项目配置的 sort_order 排序，而非名称字母序
+        const useOrder = sortBy === 'dose_group' && orderMap;
+        // 在组状态按业务优先级排序（治疗中→随访中→死亡/失访）；空状态视为在组治疗中
+        const useStatus = sortBy === 'status';
+        const statusRank = s => (s === 'treatment' || !s) ? 0 : (s === 'followup' ? 1 : (s === 'off_study' ? 2 : 3));
         list.sort((a, b) => {
-            let va = a[this.sortBy] || '';
-            let vb = b[this.sortBy] || '';
-            if (typeof va === 'string') va = va.toLowerCase();
-            if (typeof vb === 'string') vb = vb.toLowerCase();
+            let va, vb;
+            if (useStatus) {
+                va = statusRank(a.status);
+                vb = statusRank(b.status);
+            } else if (useOrder) {
+                const ka = a[sortBy], kb = b[sortBy];
+                // 未配置 sort_order 的剂量组排到末尾
+                va = (ka in orderMap) ? orderMap[ka] : Number.MAX_SAFE_INTEGER;
+                vb = (kb in orderMap) ? orderMap[kb] : Number.MAX_SAFE_INTEGER;
+            } else {
+                va = a[sortBy] || '';
+                vb = b[sortBy] || '';
+                if (typeof va === 'string') va = va.toLowerCase();
+                if (typeof vb === 'string') vb = vb.toLowerCase();
+            }
             if (va < vb) return this.sortOrder === 'asc' ? -1 : 1;
             if (va > vb) return this.sortOrder === 'asc' ? 1 : -1;
+            // 同序时按患者ID稳定排序，避免乱序抖动
+            if (a.patient_id !== b.patient_id) return a.patient_id < b.patient_id ? -1 : 1;
             return 0;
         });
         this.sortedPatients = list;
@@ -320,6 +457,8 @@ const Calendar = {
         const now = new Date();
         const today = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
         const todayIdx = dateList.indexOf(today);
+        this.dateList = dateList;
+        this.today = today;
         const cw = this.colWidth;  // 当前列宽
         const showWeekday = cw >= 60;  // 列宽>=60px时显示星期（原阈值30的2倍）
         const showLabel = cw >= 12;     // 列宽>=12px时显示日号（原阈值6的2倍）
@@ -379,6 +518,9 @@ const Calendar = {
                 firstActualDrugIdx = dateList.indexOf(actualDrugDates[0]);
                 lastActualDrugIdx = dateList.indexOf(actualDrugDates[actualDrugDates.length - 1]);
             }
+            const firstDrugDate = actualDrugDates.length > 0 ? actualDrugDates[0] : null;
+            const medInt = (p.dose_group && this.doseGroupInterval && this.doseGroupInterval[p.dose_group] != null)
+                ? this.doseGroupInterval[p.dose_group] : (this.medInterval || 21);
             // 用药绿色填充终止日期：在组治疗中→今日；其他状态→末次实际用药
             const isInTreatment = !p.status || p.status === 'treatment';
             let drugFillEndIdx;
@@ -427,7 +569,7 @@ const Calendar = {
                 else if (isDrugPeriod) cls += ' drug-period';
                 let cellStyle = 'width:' + cw + 'px;max-width:' + cw + 'px;overflow:hidden;';
                 if (isToday) cellStyle += 'position:relative;';
-                html += '<td class="' + cls + '" style="' + cellStyle + '" onclick="SlidePanel.open(' + p.id + ')">';
+                html += '<td class="' + cls + '" style="' + cellStyle + '" data-date="' + dateStr + '" onclick="SlidePanel.open(' + p.id + ')">';
                 // 治疗结束和死亡/失访小方块标记（彩色方块显示在单元格左上角）
                 if (dateStr === endTreatDate) html += '<span class="marker-square end-treat-marker"></span>';
                 if (dateStr === deathLostDate) html += '<span class="marker-square death-lost-marker"></span>';
@@ -498,6 +640,63 @@ const Calendar = {
         return icons[s] || '';
     },
 
+    /** 计算两个本地日期字符串的天数差 (b - a) */
+    diffDays(a, b) {
+        const ap = String(a).split('-'), bp = String(b).split('-');
+        return Math.round((Date.UTC(+bp[0], +bp[1] - 1, +bp[2]) - Date.UTC(+ap[0], +ap[1] - 1, +ap[2])) / 86400000);
+    },
+
+    /** 根据患者录入的用药周期锚点(C?D1)，返回指定日期对应的 CXDY 描述（支持延迟修正） */
+    formatCycleDay(p, dateStr) {
+        const drugEvents = this.events.filter(e => e.patient_id === p.id && e.type === 'drug' && e.actual_date);
+        if (drugEvents.length === 0) return '暂无用药记录';
+
+        // 解析 cycle 文本（如 "C2D1"）为 {c, d}
+        const parsed = drugEvents
+            .map(e => {
+                const m = String(e.cycle || '').match(/C(\d+)[Dd](\d+)/);
+                if (!m) return null;
+                return { c: parseInt(m[1]), d: parseInt(m[2]), date: e.actual_date };
+            })
+            .filter(Boolean);
+
+        // 以各周期第1天(D1)为周期起点锚点
+        const anchors = parsed.filter(a => a.d === 1)
+            .map(a => ({ c: a.c, date: a.date }))
+            .sort((x, y) => x.date < y.date ? -1 : (x.date > y.date ? 1 : (x.c - y.c)));
+
+        const medInt = (p.dose_group && this.doseGroupInterval && this.doseGroupInterval[p.dose_group] != null)
+            ? this.doseGroupInterval[p.dose_group]
+            : (this.medInterval || 21);
+
+        if (anchors.length > 0) {
+            // 找最后一个起点 <= dateStr 的锚点
+            let a = null;
+            for (const an of anchors) { if (an.date <= dateStr) a = an; else break; }
+            const firstAnchor = anchors[0];
+            if (a) {
+                const dayOffset = this.diffDays(a.date, dateStr) + 1; // 该周期内第几天
+                // 距首次用药（首个 D1 锚点）天数
+                const totalOff = this.diffDays(firstAnchor.date, dateStr);
+                return 'C' + a.c + 'D' + dayOffset + '（距首次用药 ' + (totalOff >= 0 ? '+' : '') + totalOff + ' 天）';
+            }
+            // dateStr 早于所有锚点：用药前
+            const pre = this.diffDays(dateStr, firstAnchor.date);
+            return '用药前 ' + pre + ' 天';
+        }
+
+        // 回退：无 D1 锚点时按首条用药日 + 固定间隔推算
+        const firstDrugDate = drugEvents.map(e => e.actual_date).sort()[0];
+        if (!firstDrugDate) return '暂无用药记录';
+        const off = this.diffDays(firstDrugDate, dateStr);
+        if (off >= 0) {
+            const cyc = Math.floor(off / medInt) + 1;
+            const dy = (off % medInt) + 1;
+            return 'C' + cyc + 'D' + dy + '（距首次用药 +' + off + ' 天）';
+        }
+        return '用药前 ' + (-off) + ' 天';
+    },
+
     setupHoverPanels(patients) {
         const container = document.getElementById('ganttContainer');
         let hoverEl = document.getElementById('globalHoverPanel');
@@ -510,18 +709,21 @@ const Calendar = {
         // 移除旧监听
         container.onmouseover = (e) => {
             const row = e.target.closest('.patient-row');
-            if (row) {
-                const fixedCell = row.querySelector('.col-fixed');
-                const onclickAttr = fixedCell?.querySelector('.patient-info')?.getAttribute('onclick');
-                if (onclickAttr) {
-                    const match = onclickAttr.match(/SlidePanel\.open\((\d+)\)/);
-                    if (match) {
-                        const pid = parseInt(match[1]);
-                        const p = this.patients.find(pt => pt.id === pid);
-                        if (p) this.showHoverPanel(hoverEl, p, fixedCell);
-                    }
-                }
-            }
+            if (!row) { hoverEl.style.display = 'none'; return; }
+            const fixedCell = row.querySelector('.col-fixed');
+            const onclickAttr = fixedCell?.querySelector('.patient-info')?.getAttribute('onclick');
+            if (!onclickAttr) { hoverEl.style.display = 'none'; return; }
+            const match = onclickAttr.match(/SlidePanel\.open\((\d+)\)/);
+            if (!match) { hoverEl.style.display = 'none'; return; }
+            const pid = parseInt(match[1]);
+            const p = this.patients.find(pt => pt.id === pid);
+            if (!p) { hoverEl.style.display = 'none'; return; }
+
+            // 优先取当前悬停的日期单元格；否则默认今天
+            const dayCell = e.target.closest('.day-cell');
+            const dateStr = dayCell?.getAttribute('data-date') || this.today;
+            const anchorEl = dayCell || fixedCell;
+            this.showHoverPanel(hoverEl, p, anchorEl, dateStr);
         };
         container.onmouseout = (e) => {
             const row = e.target.closest('.patient-row');
@@ -529,11 +731,17 @@ const Calendar = {
         };
     },
 
-    showHoverPanel(hoverEl, patient, anchorEl) {
+    showHoverPanel(hoverEl, patient, anchorEl, dateStr) {
         const p = patient;
         const patientEvents = this.events.filter(e => e.patient_id === p.id);
 
         let html = '<h4>' + this.escapeHtml(p.patient_id || '-') + '</h4>';
+
+        // 当前悬停日期与周期数
+        const cycleInfo = this.formatCycleDay(p, dateStr);
+        html += '<div class="info-row cycle-row"><span>日期</span><span>' + this.escapeHtml(dateStr) + '</span></div>';
+        html += '<div class="info-row cycle-row"><span>周期</span><span>' + this.escapeHtml(cycleInfo) + '</span></div>';
+
         html += '<div class="info-row"><span>癌肿</span><span>' + this.escapeHtml(p.cancer_type || '-') + '</span></div>';
         html += '<div class="info-row"><span>ECOG</span><span>' + (p.ecog_score ?? '-') + '</span></div>';
         html += '<div class="info-row"><span>剂量组</span><span>' + this.escapeHtml(p.dose_group || '-') + '</span></div>';
@@ -694,8 +902,8 @@ const Calendar = {
             const doseGroups = await api.getDoseGroups(this.currentProject);
             const ctSel = document.getElementById('ptCancer');
             const dgSel = document.getElementById('ptGroup');
-            ctSel.innerHTML = '<option value="">--</option>' + cancerTypes.map(ct => `<option value="${ct.id}">${ct.name}</option>`).join('');
-            dgSel.innerHTML = '<option value="">--</option>' + doseGroups.map(dg => `<option value="${dg.id}">${dg.name}</option>`).join('');
+            ctSel.innerHTML = '<option value="">--</option>' + cancerTypes.map(ct => `<option value="${ct.id}">${this.escapeHtml(ct.name)}</option>`).join('');
+            dgSel.innerHTML = '<option value="">--</option>' + doseGroups.map(dg => `<option value="${dg.id}">${this.escapeHtml(dg.name)}</option>`).join('');
         } catch(e) {
             console.error('加载表单选项失败:', e);
         }
@@ -722,7 +930,13 @@ const Calendar = {
         }, '保存中...');
     },
 
-    closeModal(id) { document.getElementById(id).classList.add('hidden'); },
+    closeModal(id) {
+        document.getElementById(id).classList.add('hidden');
+        // 关掉扫描结果弹窗后重新闪一次，避免被遮罩挡住没看到
+        if (id === 'enrollScanModal' && this._lastFlash) {
+            this.flashNewPatients(this._lastFlash.screenings, this._lastFlash.ids);
+        }
+    },
 
     escapeHtml: escapeHtml  // 统一使用 utils.js 中的全局函数
 };

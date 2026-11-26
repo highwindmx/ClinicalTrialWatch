@@ -149,6 +149,27 @@ body {
     gap: 8px;
 }
 
+/* 图表图例横条（固定显示在工具栏下方、图表上方，始终可见） */
+.chart-legend-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 14px;
+    padding: 8px 16px;
+    background: var(--card-bg);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: #374151;
+}
+.chart-legend-bar .legend-title { font-weight: 600; color: #374151; margin-right: 2px; }
+.chart-legend-bar .legend-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.chart-legend-bar .legend-swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; flex: none; }
+.chart-legend-bar .legend-dot { width: 11px; height: 11px; border-radius: 50%; background: #374151; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 8px; flex: none; }
+.chart-legend-bar .legend-dot.confirm { background: #22c55e; }
+.chart-legend-bar .legend-symbol { font-size: 11px; line-height: 1; color: #374151; }
+.chart-legend-bar .legend-cross { font-size: 13px; line-height: 1; color: #6b7280; }
+.chart-legend-bar .legend-sep { width: 1px; height: 14px; background: #e5e7eb; margin: 0 2px; }
+
 /* ==================== 工具栏 ==================== */
 .toolbar {
     background: var(--card-bg);
@@ -379,6 +400,14 @@ body {
 .gantt-table tbody tr:hover { background: var(--hover-bg); }
 .gantt-table tbody tr:hover .col-fixed { background: var(--hover-bg); }
 
+/* 入组表新增行闪动提示 */
+@keyframes patientFlash {
+    0%, 100% { background: transparent; box-shadow: none; }
+    50% { background: #fde68a; box-shadow: inset 0 0 0 2px #f59e0b; }
+}
+.gantt-table tbody tr.patient-flash { animation: patientFlash 1s ease-in-out 6; }
+.gantt-table tbody tr.patient-flash .col-fixed { animation: patientFlash 1s ease-in-out 6; }
+
 /* 患者信息单元格 */
 .col-fixed { position: relative; }
 .patient-info {
@@ -483,6 +512,8 @@ body {
 .hover-panel .event-list { margin-top: 4px; border-top: 1px solid var(--border); padding-top: 4px; }
 .hover-panel .event-item { font-size: 10px; padding: 2px 0; display: flex; align-items: center; gap: 4px; }
 .hover-panel .event-tag { padding: 1px 4px; border-radius: 3px; color: #fff; font-size: 9px; }
+.hover-panel .info-row.cycle-row span:first-child { color: var(--primary); font-weight: 500; }
+.hover-panel .info-row.cycle-row span:last-child { color: var(--primary); font-weight: 700; }
 
 /* ==================== 图例 ==================== */
 /* 注意：.legend-bar 目前已隐藏（见下方 display:none 覆盖），
@@ -990,3 +1021,89 @@ body {
 /* 合计行 */
 .ae-total-row { background: #f8f9fb; }
 .ae-total-row td { border-top: 2px solid var(--border); }
+
+/* ==================== 遗传密码表 ==================== */
+.codon-toolbar { background: var(--card-bg); border-bottom: 1px solid var(--border); }
+.codon-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.codon-table th, .codon-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); text-align: center; }
+.codon-table thead th { background: #f3f4f6; color: #374151; font-weight: 600; position: sticky; top: 0; z-index: 1; }
+.codon-table td.dna, .codon-table td.rna { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; letter-spacing: 2px; font-size: 14px; font-weight: 600; }
+.codon-row.start { background: #ecfdf5; }
+.codon-row.stop { background: #fef2f2; }
+.codon-badge.start { color: #047857; font-weight: 600; }
+.codon-badge.stop { color: #b91c1c; font-weight: 600; }
+
+/* ==================== 计算工具页面 ==================== */
+.calc-subtabs {
+    background: var(--card-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 16px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.calc-subtab {
+    font-size: 13px;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    border-radius: 999px;
+    cursor: pointer;
+    color: var(--text);
+}
+.calc-subtab.active {
+    background: var(--primary, #378ADD);
+    border-color: var(--primary, #378ADD);
+    color: #fff;
+    font-weight: 600;
+}
+.calc-body { padding: 20px 16px; background: var(--bg); }
+.calc-desc {
+    font-size: 13px; color: #6b7280; line-height: 1.6;
+    margin: 0 0 16px; max-width: 780px;
+}
+.calc-shared {
+    display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end;
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 14px 16px; margin-bottom: 16px;
+}
+.calc-field { display: flex; flex-direction: column; gap: 4px; }
+.calc-field label { font-size: 12px; color: #374151; font-weight: 500; }
+.calc-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+}
+.calc-card {
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px; display: flex; flex-direction: column; gap: 12px;
+}
+.calc-card-title { font-size: 14px; font-weight: 600; margin: 0; color: var(--text); }
+.calc-result { min-height: 56px; }
+.calc-out { display: flex; flex-direction: column; gap: 4px; }
+.calc-big {
+    font-size: 26px; font-weight: 700; color: var(--primary, #378ADD);
+    font-family: ui-monospace, Menlo, Consolas, monospace; letter-spacing: 1px;
+}
+.calc-sub { font-size: 12px; color: #6b7280; }
+.calc-err { font-size: 13px; color: #b91c1c; }
+
+/* ==================== 查询与计算（左侧tab布局） ==================== */
+.tools-layout { display: flex; height: calc(100vh - 110px); }
+.tools-sidebar {
+    width: 168px; flex-shrink: 0; background: var(--card-bg);
+    border-right: 1px solid var(--border); padding: 12px 8px;
+    display: flex; flex-direction: column; gap: 6px;
+}
+.tools-nav {
+    text-align: left; font-size: 13px; padding: 10px 12px;
+    border: 1px solid transparent; border-radius: var(--radius);
+    background: transparent; color: var(--text); cursor: pointer;
+}
+.tools-nav:hover { background: var(--bg); }
+.tools-nav.active {
+    background: var(--primary, #378ADD); color: #fff; font-weight: 600;
+}
+.tools-main { flex: 1; overflow: auto; }
+.tools-pane { display: none; }
+.tools-pane.active { display: block; }
