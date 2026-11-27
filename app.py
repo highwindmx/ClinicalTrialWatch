@@ -8,6 +8,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 import database
 import enrollment_sync
+import ocr_link
 import os
 import sys
 import json
@@ -207,6 +208,22 @@ def api_get_enrollment_notice(pid):
     except Exception:
         notice = None
     return jsonify({'notice': notice})
+
+
+@app.route('/api/projects/<int:pid>/ocr-visits', methods=['GET'])
+@api_error_handler
+def api_get_ocr_visits(pid):
+    """只读扫描 minerUOCR 资料目录，返回按筛选号匹配的访视标记（不调用 minerUOCR 服务）。"""
+    project = database.get_project(pid)
+    root = (project or {}).get('ocr_dir') or ''
+    if not root or not os.path.isdir(root):
+        return jsonify({'configured': False, 'root': root, 'mapped': {},
+                        'unmatched': [], 'total_dirs': 0, 'dated_dirs': 0})
+    patients = database.get_patients(pid)
+    ids = [p.get('patient_id') for p in patients if p.get('patient_id')]
+    mapped, unmatched, total, dated = ocr_link.scan(root, ids)
+    return jsonify({'configured': True, 'root': root, 'mapped': mapped,
+                    'unmatched': unmatched, 'total_dirs': total, 'dated_dirs': dated})
 
 # ==================== 患者 API ====================
 

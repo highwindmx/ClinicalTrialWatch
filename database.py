@@ -468,6 +468,16 @@ def migrate_db():
     except Exception as e:
         print(f"迁移 project.default_drug_name 失败: {e}")
 
+    # minerUOCR 资料根目录（只读扫描 visits.json，在日历上标记访视）
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info('project')").fetchall()]
+        if 'ocr_dir' not in cols:
+            conn.execute("ALTER TABLE project ADD COLUMN ocr_dir TEXT")
+            conn.commit()
+            print("迁移：project 表添加 ocr_dir 字段")
+    except Exception as e:
+        print(f"迁移 project.ocr_dir 失败: {e}")
+
     # 入组表自动同步配置（每个项目一条）
     c.execute('''CREATE TABLE IF NOT EXISTS xlsx_watch_config (
         project_id INTEGER PRIMARY KEY,
@@ -522,7 +532,7 @@ def update_project(pid, data):
     conn = get_db()
     fields = []
     vals = []
-    for k in ('name', 'code', 'description', 'status', 'dlt_days', 'medication_interval', 'assessment_interval', 'assessment_calc_base', 'default_drug_name'):
+    for k in ('name', 'code', 'description', 'status', 'dlt_days', 'medication_interval', 'assessment_interval', 'assessment_calc_base', 'default_drug_name', 'ocr_dir'):
         if k in data:
             fields.append(f"{k}=?")
             vals.append(data[k])
@@ -1182,7 +1192,7 @@ def get_events_for_gantt_range(project_id, start_date, end_date):
                 'type': 'drug', 'id': r['id'], 'patient_id': r['patient_id'],
                 'pid_text': r['pid_text'],
                 'date': r['actual_date'], 'actual_date': r['actual_date'],
-                'cycle': r['cycle'],
+                'cycle': r['cycle'], 'dose': r['dose'], 'dose_unit': r['dose_unit'],
                 'label': f"{r['drug_name']} {r['cycle'] or ''}",
                 'detail': f"剂量: {r['dose']}{r['dose_unit'] or ''}"
             })

@@ -841,12 +841,25 @@ body {
 }
 .today-vline-header { opacity: 1; }
 
-/* DLT观察期格染色（浅红背景，优先级高于绿色用药期） */
-.day-cell.dlt-period { background: #fff1f0 !important; }
-.gantt-table tbody tr:hover .day-cell.dlt-period { background: #ffe4e4 !important; }
-/* 用药期间格染色（浅绿背景） */
-.day-cell.drug-period { background: #ecfdf5 !important; }
-.gantt-table tbody tr:hover .day-cell.drug-period { background: #d1fae5 !important; }
+/* DLT观察期格染色（剂量非 0：红-300；优先级高于绿色用药期） */
+.day-cell.dlt-period { background: #fca5a5 !important; }
+.gantt-table tbody tr:hover .day-cell.dlt-period { background: #f87171 !important; }
+/* DLT期间剂量为 0：中性灰 */
+.day-cell.dlt-period-low { background-color: #f3f4f6 !important; }
+.gantt-table tbody tr:hover .day-cell.dlt-period-low { background-color: #e5e7eb !important; }
+/* 用药期间格染色（剂量非 0：绿-300） */
+.day-cell.drug-period { background: #6ee7b7 !important; }
+.gantt-table tbody tr:hover .day-cell.drug-period { background: #34d399 !important; }
+/* 剂量为 0 起至下次用药前：中性灰 */
+.day-cell.drug-period-low { background-color: #f3f4f6 !important; }
+.gantt-table tbody tr:hover .day-cell.drug-period-low { background-color: #e5e7eb !important; }
+/* 已结束治疗的患者：红绿各调浅两档（灰底与 DLT 终点竖线不变） */
+.gantt-table tbody tr.treatment-ended .day-cell.dlt-period { background: #fee2e2 !important; }
+.gantt-table tbody tr.treatment-ended:hover .day-cell.dlt-period { background: #fecaca !important; }
+.gantt-table tbody tr.treatment-ended .day-cell.drug-period { background: #d1fae5 !important; }
+.gantt-table tbody tr.treatment-ended:hover .day-cell.drug-period { background: #a7f3d0 !important; }
+/* DLT 最后一天：红色右竖线，与剂量颜色解耦，便于定位观察期边界 */
+.day-cell.dlt-end-cell { box-shadow: inset -2px 0 0 #dc2626 !important; }
 /* 治疗结束和死亡/失访小方块标记（显示在单元格左上角） */
 .day-cell .marker-square {
     display: inline-block;
@@ -859,6 +872,20 @@ body {
 }
 .day-cell .end-treat-marker { background: #f97316; }
 .day-cell .death-lost-marker { background: #6b7280; }
+/* minerUOCR 访视标记：右上角紫色小菱形（左上角方块、下方事件点互不遮挡） */
+.day-cell .ocr-visit-marker {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    background: #7c3aed;
+    border-radius: 1px;
+    transform: rotate(45deg);
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
+}
+.hover-panel .ocr-row span:last-child { color: #6d28d9; }
 /* 治疗结束时间标记（橙色边框，优先级低于DLT和用药期） */
 /* 已改为单元格内小方块，上方 marker-square 样式替代 */
 /* 死亡/失访时间标记（深灰边框，优先级最低） */

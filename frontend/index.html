@@ -270,6 +270,11 @@
                         <label style="font-size:13px;color:#374151;min-width:70px">默认药物:</label>
                         <input type="text" id="configDefaultDrug" class="form-input" style="flex:1;max-width:300px" placeholder="如 IN10028，留空则用项目编号" onchange="ConfigPanel.saveDefaultDrugName(this.value)">
                     </div>
+                    <div style="display:flex;align-items:center;gap:10px">
+                        <label style="font-size:13px;color:#374151;min-width:70px">OCR资料目录:</label>
+                        <input type="text" id="ocrDirInput" class="form-input" style="flex:1;max-width:560px" placeholder="D:\...\过程\入排审核（minerUOCR 参与者目录）" onchange="ConfigPanel.saveOcrDir(this.value)">
+                    </div>
+                    <div id="ocrDirStatus" style="font-size:12px;color:#6b7280;line-height:1.5">未配置：填写 minerUOCR 参与者目录后，日历自动显示访视标记（只读，不修改资料）</div>
                 </div>
             </div>
             <!-- DLT观察期 -->
@@ -319,7 +324,8 @@
                 <p style="font-size:12px;color:#6b7280;margin:0 0 10px;line-height:1.6">
                     监控指定 xlsx 的「入组」分页：新增筛选号自动建参与者；剂量组忽略“回填/储备”字样；癌种原样写入（可在上方癌肿类型管理中再调整）。<br>
                     C1D1 用药日期取「入组时间/日期」，药物名称取上方「默认药物」，剂量取剂量组数字（如 50mg→50）；若 xlsx 有「基线肿评日期」「基线靶病灶SOD」列则同步写入基线肿评（已存在的不覆盖）。<br>
-                    自动监听只盯「筛选号」是否有新增/删除；其他列改动不会自动同步，需点日历页的「🔄 扫描入组表」。
+                    「EOT日期 / 治疗结束」列写入治疗结束日期，仅在为空时回填、已有值不覆盖；治疗中状态会转为 followup。<br>
+                    自动监听盯「筛选号」与「EOT日期」变化；其他列改动不会自动同步，需点日历页的「🔄 扫描入组表」。
                 </p>
                 <div style="display:flex;flex-direction:column;gap:8px;padding:4px 0">
                     <div style="display:flex;align-items:center;gap:10px">
@@ -338,7 +344,7 @@
                     <div id="enrollSyncStatus" style="font-size:12px;color:#6b7280;line-height:1.6;min-height:18px"></div>
                     <div id="enrollSyncPreview" style="font-size:12px;color:#374151;line-height:1.6"></div>
                     <div style="font-size:11px;color:#9ca3af;line-height:1.6">
-                        可识别表头：筛选号 / 参与者缩写 / 剂量组 / 性别 / 年龄 / ECOG / 癌种 / 入组时间 / 基线肿评日期 / 基线靶病灶SOD（C1D1 日期取入组时间，无需单列）
+                        可识别表头：筛选号 / 参与者缩写 / 剂量组 / 性别 / 年龄 / ECOG / 癌种 / 入组时间 / EOT日期（或治疗结束） / 基线肿评日期 / 基线靶病灶SOD（C1D1 日期取入组时间，无需单列）
                     </div>
                 </div>
             </div>

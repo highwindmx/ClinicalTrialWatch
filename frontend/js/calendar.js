@@ -69,7 +69,10 @@ const Calendar = {
             const r = await api.getEnrollmentNotice(this.currentProject);
             const n = r && r.notice;
             if (!n) return;
-            showToast('入组表自动同步：新增 ' + (n.created || 0) + ' 例（' + (n.screenings || []).join('、') + '）', 'success');
+            const parts = [];
+            if (n.created) parts.push('新增 ' + n.created + ' 例（' + (n.screenings || []).join('、') + '）');
+            if (n.eot_updated) parts.push('EOT ' + n.eot_updated + ' 例（' + (n.eot_screenings || []).join('、') + '）');
+            if (parts.length) showToast('入组表自动同步：' + parts.join('；'), 'success');
             await this.refresh();
             if (this.currentTab === 'calendar' && ((n.patient_ids || []).length || (n.screenings || []).length)) {
                 this.flashNewPatients(n.screenings || [], n.patient_ids || []);
@@ -213,7 +216,13 @@ const Calendar = {
     /** 刷新日历数据 - 完整时间轴 */
     async refresh() {
         if (!this.currentProject) return;
-        const data = await api.getGanttFullData(this.currentProject);
+        // OCR 资料目录只读扫描失败时不影响日历主数据
+        const [data, ocr] = await Promise.all([
+            api.getGanttFullData(this.currentProject),
+            api.getOcrVisits(this.currentProject).catch(() => ({ mapped: {} }))
+        ]);
+        this.ocrVisits = (ocr && ocr.mapped) || {};
+        this.ocrStats = ocr || {};
         this.patients = data.patients || [];
         this.events = data.events || [];
         this.dateRange = data.date_range || {};
@@ -298,9 +307,11 @@ const Calendar = {
             const r = await api.scanEnrollment(this.currentProject, {});
             const names = r.created_screenings || [];
             const ids = r.created_patient_ids || [];
+            const eotNames = r.eot_screenings || [];
             const lines = [
                 '有效记录：' + r.rows + ' 条',
                 '新增参与者：' + r.created + (names.length ? '（' + names.join('、') + '）' : ''),
+                'EOT 回填：' + (r.eot_updated || 0) + (eotNames.length ? '（' + eotNames.join('、') + '）' : ''),
                 'C1D1 用药：' + r.medications + ' ｜ 基线肿评：' + r.assessments + ' ｜ 库中已存在：' + r.existing
             ];
             if (r.skipped) lines.push('状态：' + r.reason);
@@ -521,13 +532,41 @@ const Calendar = {
             const firstDrugDate = actualDrugDates.length > 0 ? actualDrugDates[0] : null;
             const medInt = (p.dose_group && this.doseGroupInterval && this.doseGroupInterval[p.dose_group] != null)
                 ? this.doseGroupInterval[p.dose_group] : (this.medInterval || 21);
-            // 用药绿色填充终止日期：在组治疗中→今日；其他状态→末次实际用药
+            // 治疗结束时间（同时用于单元格左上角标记）
+            const endTreatDate = p.end_treatment_date || '';
+            // 用药绿色填充终止日期：在组治疗中→今日；其他状态→EOT 前一天（EOT 当天有用药则含当天，无 EOT 则末次实际用药）
             const isInTreatment = !p.status || p.status === 'treatment';
             let drugFillEndIdx;
             if (isInTreatment) {
                 drugFillEndIdx = todayIdx >= 0 ? todayIdx : lastActualDrugIdx;
             } else {
-                drugFillEndIdx = lastActualDrugIdx;
+                const endTreatIdx = endTreatDate ? dateList.indexOf(endTreatDate) : -1;
+                // 默认渲染到 EOT 前一天；EOT 当天有实际用药记录时保留当天
+                if (endTreatIdx >= 0) {
+                    const hasDrugOnEnd = this.events.some(e => e.patient_id === p.id && e.type === 'drug' && e.actual_date === endTreatDate);
+                    drugFillEndIdx = hasDrugOnEnd ? endTreatIdx : endTreatIdx - 1;
+                } else {
+                    drugFillEndIdx = lastActualDrugIdx;
+                }
+            }
+            // 剂量为 0 的用药日 → 至下一条用药记录前，使用更透明的绿色
+            const zeroDoseIdxSet = new Set();
+            const zeroDoseDates = this.events
+                .filter(e => e.patient_id === p.id && e.type === 'drug' && e.actual_date &&
+                             e.dose != null && String(e.dose).trim() !== '' && Number(e.dose) === 0)
+                .map(e => e.actual_date).sort();
+            if (zeroDoseDates.length && drugFillEndIdx >= 0) {
+                const allDrugDates = this.events
+                    .filter(e => e.patient_id === p.id && e.type === 'drug' && e.actual_date)
+                    .map(e => e.actual_date).sort();
+                zeroDoseDates.forEach(zd => {
+                    const zi = dateList.indexOf(zd);
+                    if (zi < 0) return;
+                    const nextDate = allDrugDates.find(d => d > zd);
+                    const nextIdx = nextDate ? dateList.indexOf(nextDate) : -1;
+                    const ziEnd = nextIdx >= 0 ? Math.min(nextIdx - 1, drugFillEndIdx) : drugFillEndIdx;
+                    for (let k = zi; k <= ziEnd; k++) zeroDoseIdxSet.add(k);
+                });
             }
             // 事件日期（含计划）用于显示事件卡片
             let firstDrugIdx = -1, lastDrugIdx = -1;
@@ -542,11 +581,20 @@ const Calendar = {
             const pDltObservation = (p.dlt_observation === undefined || p.dlt_observation === null) ? true : !!p.dlt_observation;
             const dltStart = (firstActualDrugIdx >= 0 && pDltObservation) ? firstActualDrugIdx : -1;
             const dltEnd = dltStart >= 0 ? dltStart + dltDays - 1 : -1;
-            // 治疗结束时间和死亡/失访时间
-            const endTreatDate = p.end_treatment_date || '';
+            // 死亡/失访时间
             const deathLostDate = p.death_lost_date || '';
+            // minerUOCR 访视：按日期索引，格子右上角标记（只读，不改变原有红绿灰渲染）
+            const ocrInfo = (this.ocrVisits || {})[p.patient_id] || null;
+            const ocrByDate = {};
+            if (ocrInfo && ocrInfo.visits) {
+                ocrInfo.visits.forEach(v => {
+                    if (!v.date) return;
+                    if (!ocrByDate[v.date]) ocrByDate[v.date] = [];
+                    ocrByDate[v.date].push(v.label);
+                });
+            }
 
-            html += '<tr class="patient-row" data-patient-id="' + p.id + '" data-first-drug="' + firstActualDrugIdx + '" data-last-drug="' + drugFillEndIdx + '" data-dose-color="' + (doseColor || '#378ADD') + '">';
+            html += '<tr class="patient-row' + (isInTreatment ? '' : ' treatment-ended') + '" data-patient-id="' + p.id + '" data-first-drug="' + firstActualDrugIdx + '" data-last-drug="' + drugFillEndIdx + '" data-dose-color="' + (doseColor || '#378ADD') + '">';
             html += '<td class="col-fixed">';
             if (doseColor) html += '<div class="dose-color-bar" style="background:' + doseColor + '"></div>';
             html += '<div class="patient-info" onclick="SlidePanel.open(' + p.id + ')">';
@@ -564,15 +612,21 @@ const Calendar = {
                 const events = this.getEventsForDay(p.id, dateStr);
                 let cls = 'day-cell';
                 if (isWeekend) cls += ' weekend-col';
-                // DLT红色优先于用药绿色；小方块标记在下方单独处理
-                if (isDLT) cls += ' dlt-period';
-                else if (isDrugPeriod) cls += ' drug-period';
+                // DLT红色优先于用药绿色；剂量为 0 时用中性灰
+                if (isDLT) cls += zeroDoseIdxSet.has(i) ? ' dlt-period-low' : ' dlt-period';
+                else if (isDrugPeriod) cls += zeroDoseIdxSet.has(i) ? ' drug-period-low' : ' drug-period';
+                // DLT 最后一天：右边界竖线（不受底色影响）
+                if (dltEnd >= 0 && i === dltEnd) cls += ' dlt-end-cell';
                 let cellStyle = 'width:' + cw + 'px;max-width:' + cw + 'px;overflow:hidden;';
-                if (isToday) cellStyle += 'position:relative;';
+                if (isToday || ocrByDate[dateStr]) cellStyle += 'position:relative;';
                 html += '<td class="' + cls + '" style="' + cellStyle + '" data-date="' + dateStr + '" onclick="SlidePanel.open(' + p.id + ')">';
                 // 治疗结束和死亡/失访小方块标记（彩色方块显示在单元格左上角）
                 if (dateStr === endTreatDate) html += '<span class="marker-square end-treat-marker"></span>';
                 if (dateStr === deathLostDate) html += '<span class="marker-square death-lost-marker"></span>';
+                // minerUOCR 访视标记：右上角紫色小菱形，与左上角方块/下方事件点互不遮挡
+                if (ocrByDate[dateStr]) {
+                    html += '<span class="ocr-visit-marker" title="OCR资料访视：' + this.escapeHtml(ocrByDate[dateStr].join('、')) + '"></span>';
+                }
                 if (events.length > 0) {
                     if (cw < 60) {
                         // 窄列：只显示色点（按类型用不同形状区分，避免撞色）
@@ -733,7 +787,8 @@ const Calendar = {
 
     showHoverPanel(hoverEl, patient, anchorEl, dateStr) {
         const p = patient;
-        const patientEvents = this.events.filter(e => e.patient_id === p.id);
+        // 只显示当前悬停日期的事件（与日历过滤条件一致）
+        const patientEvents = this.events.filter(e => e.patient_id === p.id && e.date === dateStr && this.isEventVisible(e));
 
         let html = '<h4>' + this.escapeHtml(p.patient_id || '-') + '</h4>';
 
@@ -748,6 +803,15 @@ const Calendar = {
         html += '<div class="info-row"><span>入组日期</span><span>' + this.escapeHtml(p.enroll_date || '-') + '</span></div>';
         html += '<div class="info-row"><span>状态</span><span>' + this.statusLabel(p.status) + '</span></div>';
 
+        // minerUOCR 只读资料：显示当日访视标签及对应目录
+        const ocrInfo = this.ocrVisits && this.ocrVisits[p.patient_id];
+        const ocrLabels = ocrInfo && ocrInfo.visits
+            ? ocrInfo.visits.filter(v => v.date === dateStr).map(v => v.label) : [];
+        if (ocrLabels.length) {
+            html += '<div class="info-row ocr-row"><span>OCR访视</span><span>' +
+                this.escapeHtml(ocrLabels.join('、')) + ' · ' + this.escapeHtml(ocrInfo.dir || '') + '</span></div>';
+        }
+
         if (patientEvents.length > 0) {
             html += '<div class="event-list">';
             const showEvents = patientEvents.slice(0, 5);
@@ -758,6 +822,8 @@ const Calendar = {
             });
             if (patientEvents.length > 5) html += '<div class="event-item" style="color:#6b7280">...还有' + (patientEvents.length - 5) + '个事件</div>';
             html += '</div>';
+        } else {
+            html += '<div class="event-list"><div class="event-item" style="color:#6b7280">当日无事件记录</div></div>';
         }
 
         hoverEl.innerHTML = html;

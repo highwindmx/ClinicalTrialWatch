@@ -2,9 +2,9 @@
 入组表增量同步（clinWatch 核心模块）
 
 职责：读取项目配置的 xlsx「入组」sheet，按筛选号增量创建参与者，并幂等回填
-C1D1 用药与基线肿评。只新增、不覆盖已有临床数据；C1D1 日期即入组日期，药物
-名称取项目配置 default_drug_name，剂量取剂量组数字；癌种按原样写入，剂量组
-去掉「回填 / 储备」等字样后匹配项目配置。
+C1D1 用药、基线肿评与 EOT 治疗结束日期。只新增、不覆盖已有临床数据；C1D1 日期
+即入组日期，药物名称取项目配置 default_drug_name，剂量取剂量组数字；癌种按原样
+写入，剂量组去掉「回填 / 储备」等字样后匹配项目配置。
 
 设计要点：
 - 表头按名称识别（见 HEADER_ALIASES），列顺序变化不影响；
@@ -37,6 +37,7 @@ HEADER_ALIASES = {
     'ecog':           ['ecog', 'ecog评分', 'ecog评分0-5'],
     'cancer_type':    ['癌种', '癌肿', '癌肿类型', '肿瘤类型', '病理类型'],
     'enroll_date':    ['入组时间', '入组日期'],
+    'eot_date':       ['eot日期', 'eot', '治疗结束', '治疗结束日期', 'end of treatment date', 'endtreatmentdate'],
     'baseline_date':  ['基线肿评日期', '基线评估日期', '基线影像日期', '基线检查日期', '基线日期'],
     'baseline_sod':   ['基线靶病灶sod', '基线靶病灶总和', '基线sod', '基线靶病灶径线和', '基线肿瘤径线和'],
 }
@@ -186,6 +187,7 @@ def read_enrollment_rows(path, sheet_name=DEFAULT_SHEET):
                 'ecog': _to_number(cell('ecog')),
                 'cancer_type': _norm_name(cell('cancer_type')),
                 'enroll_date': enroll_date,
+                'eot_date': _to_date(cell('eot_date')),
                 'c1d1_date': enroll_date,
                 'baseline_date': _to_date(cell('baseline_date')),
                 'baseline_sod': _to_number(cell('baseline_sod')),
@@ -197,9 +199,11 @@ def read_enrollment_rows(path, sheet_name=DEFAULT_SHEET):
 
 
 def compute_signature(rows):
-    """签名只看筛选号（C 列）：仅新增/删除条目触发自动同步，其他列改动不触发。"""
-    screenings = [str(r.get('screening') or '').strip() for r in rows]
-    payload = json.dumps(screenings, ensure_ascii=False)
+    """签名看筛选号（C 列）+ EOT 日期：新增条目或治疗结束日期变化都触发自动同步。"""
+    payload = json.dumps(
+        [[str(r.get('screening') or '').strip(), r.get('eot_date')] for r in rows],
+        ensure_ascii=False,
+    )
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 
@@ -288,7 +292,10 @@ def sync_enrollment(project_id, path=None, sheet_name=None, force=False, dry_run
         'rows': len(rows), 'columns': meta['columns'], 'signature': signature,
         'created': 0, 'medications': 0, 'assessments': 0,
         'existing': 0, 'would_create': 0, 'would_create_screenings': [],
-        'created_screenings': [], 'created_patient_ids': [], 'warnings': [], 'errors': [],
+        'created_screenings': [], 'created_patient_ids': [],
+        'eot_updated': 0, 'eot_screenings': [],
+        'eot_rows': sum(1 for r in rows if r.get('eot_date')),
+        'warnings': [], 'errors': [],
         'created_dose_groups': [], 'created_cancer_types': [],
         'scanned_at': _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
     }
@@ -331,16 +338,28 @@ def sync_enrollment(project_id, path=None, sheet_name=None, force=False, dry_run
             if existing:
                 patient_db_id = existing['id']
                 result['existing'] += 1
-                # 已存在者只做 C1D1 / 基线幂等回填，不改基线信息
+                # 已存在者只做 C1D1 / 基线 / EOT 幂等回填，不改基线信息
                 dg_id, ct_id = _ensure_config_ids(project_id, dg_name, dg_id, ct_name, ct_id, ctx)
+                if rec['eot_date']:
+                    cur = database.get_patient(patient_db_id) or {}
+                    if not cur.get('end_treatment_date'):
+                        cur_status = cur.get('status') or 'treatment'
+                        database.update_patient(patient_db_id, {
+                            'end_treatment_date': rec['eot_date'],
+                            # treatment 自动转 followup；off_study 等手动状态保留
+                            'status': 'followup' if cur_status == 'treatment' else cur_status,
+                        })
+                        result['eot_updated'] += 1
+                        result['eot_screenings'].append(rec['screening'])
             else:
                 dg_id, ct_id = _ensure_config_ids(project_id, dg_name, dg_id, ct_name, ct_id, ctx)
                 custom = json.dumps({'abbr': rec['abbr']}, ensure_ascii=False) if rec['abbr'] else '{}'
                 patient_db_id = database.create_patient({
                     'project_id': project_id,
                     'patient_id': rec['screening'],
-                    'status': 'treatment',
+                    'status': 'followup' if rec['eot_date'] else 'treatment',
                     'enroll_date': rec['enroll_date'],
+                    'end_treatment_date': rec['eot_date'],
                     'dlt_observation': 1,
                     'age': rec['age'], 'sex': rec['sex'],
                     'cancer_type': ct_name, 'cancer_type_id': ct_id,
@@ -413,7 +432,7 @@ def sync_enrollment(project_id, path=None, sheet_name=None, force=False, dry_run
     database.save_xlsx_watch_config(project_id, {
         'last_scan_at': result['scanned_at'],
         'last_signature': signature,
-        'last_result': json.dumps({k: result[k] for k in ('created', 'created_screenings', 'medications', 'assessments', 'existing', 'warnings', 'errors')}, ensure_ascii=False),
+        'last_result': json.dumps({k: result[k] for k in ('created', 'created_screenings', 'medications', 'assessments', 'existing', 'eot_updated', 'eot_screenings', 'warnings', 'errors')}, ensure_ascii=False),
     })
     _log(f'project={project_id} 新增参与者={result["created"]} C1D1={result["medications"]} 基线肿评={result["assessments"]} 错误={len(result["errors"])}')
     return result
@@ -534,14 +553,16 @@ class EnrollmentWatchService:
             for cfg in configs:
                 try:
                     res = sync_enrollment(cfg['project_id'], path=path, sheet_name=cfg.get('sheet_name'), force=False)
-                    # 自动同步新增了参与者：留下通知，前端轮询后 toast + 闪动提示
-                    if res.get('created'):
+                    # 自动同步新增参与者或回填 EOT：留下通知，前端轮询后提示
+                    if res.get('created') or res.get('eot_updated'):
                         database.save_xlsx_watch_config(cfg['project_id'], {
                             'auto_notice': json.dumps({
                                 'at': res['scanned_at'],
                                 'created': res['created'],
                                 'screenings': res['created_screenings'],
                                 'patient_ids': res['created_patient_ids'],
+                                'eot_updated': res.get('eot_updated', 0),
+                                'eot_screenings': res.get('eot_screenings', []),
                             }, ensure_ascii=False)
                         })
                 except Exception as exc:

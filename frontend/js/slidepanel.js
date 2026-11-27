@@ -209,7 +209,7 @@ const SlidePanel = {
         body.innerHTML = this.medications.map(m => '<tr>' +
             '<td><input class="inline-edit" value="' + escapeHtml(m.drug_name||'') + '" onchange="SlidePanel.updateMed(' + m.id + ',\'drug_name\',this.value,this)"></td>' +
             '<td><input class="inline-edit" type="date" value="' + escapeHtml(m.actual_date||'') + '" onchange="SlidePanel.updateMed(' + m.id + ',\'actual_date\',this.value,this)"></td>' +
-            '<td><input class="inline-edit" value="' + escapeHtml(m.dose||'') + '" onchange="SlidePanel.updateMedDose(' + m.id + ',this.value,this)" placeholder="如200mg" style="width:80px"></td>' +
+            '<td><input class="inline-edit" value="' + escapeHtml(m.dose ?? '') + '" onchange="SlidePanel.updateMedDose(' + m.id + ',this.value,this)" placeholder="如200mg" style="width:80px"></td>' +
             '<td><input class="inline-edit" value="' + escapeHtml(m.cycle||'') + '" onchange="SlidePanel.updateMed(' + m.id + ',\'cycle\',this.value,this)" placeholder="' + suggest + '" style="width:60px"></td>' +
             '<td><button class="btn btn-sm" onclick="SlidePanel.deleteMed(' + m.id + ')" style="color:#D85A30">删</button></td>' +
             '</tr>').join('');
@@ -225,7 +225,14 @@ const SlidePanel = {
         this._saveHint(el);
     },
     async addMedication() {
-        await api.createMedication(this.patientId, { drug_name: '新药物' });
+        let drugName = '新药物';
+        try {
+            const proj = await api.getProject(Calendar.currentProject);
+            if (proj && proj.default_drug_name) drugName = proj.default_drug_name;
+        } catch (e) {
+            console.warn('获取项目默认药物失败，使用默认名称', e);
+        }
+        await api.createMedication(this.patientId, { drug_name: drugName });
         this.medications = await api.getMedications(this.patientId);
         this.renderMedications();
     },

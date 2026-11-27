@@ -57,6 +57,11 @@ const api = {
         return fetch(`${API_BASE}/projects/${id}/enrollment-sync/notice`).then(checkResponse);
     },
 
+    // ==================== minerUOCR 访视标记（只读） ====================
+    getOcrVisits(id) {
+        return fetch(`${API_BASE}/projects/${id}/ocr-visits`).then(checkResponse);
+    },
+
     // ==================== 患者 ====================
     getPatients(projectId) {
         return fetch(`${API_BASE}/patients?project_id=${projectId}`).then(checkResponse);

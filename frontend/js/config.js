@@ -9,12 +9,13 @@ const ConfigPanel = {
 
     async load() {
         if (!Calendar.currentProject) return;
-        // 四个 API 并行加载，显著缩短配置面板打开延迟
-        const [doseGroups, cancerTypes, projectData, syncCfg] = await Promise.all([
+        // 五个 API 并行加载，显著缩短配置面板打开延迟
+        const [doseGroups, cancerTypes, projectData, syncCfg, ocrInfo] = await Promise.all([
             api.getDoseGroups(Calendar.currentProject),
             api.getCancerTypes(Calendar.currentProject),
             api.getProject(Calendar.currentProject).catch(e => { console.warn('加载项目信息失败', e); return null; }),
-            api.getEnrollmentSync(Calendar.currentProject).catch(e => { console.warn('加载入组同步配置失败', e); return null; })
+            api.getEnrollmentSync(Calendar.currentProject).catch(e => { console.warn('加载入组同步配置失败', e); return null; }),
+            api.getOcrVisits(Calendar.currentProject).catch(e => { console.warn('加载OCR访视信息失败', e); return null; })
         ]);
         this.doseGroups = doseGroups;
         this.cancerTypes = cancerTypes;
@@ -31,10 +32,13 @@ const ConfigPanel = {
             if (dltInput) dltInput.value = projectData.dlt_days ?? 21;
             const calcBaseSelect = document.getElementById('assessmentCalcBase');
             if (calcBaseSelect) calcBaseSelect.value = projectData.assessment_calc_base || 'baseline';
+            const ocrDirInput = document.getElementById('ocrDirInput');
+            if (ocrDirInput) ocrDirInput.value = projectData.ocr_dir || '';
         }
         this.renderDoseGroups();
         this.renderCancerTypes();
         this.renderEnrollSync();
+        this.renderOcrDir(ocrInfo);
         this.bindEvents();
     },
 
@@ -60,6 +64,37 @@ const ConfigPanel = {
     },
     async saveDefaultDrugName(value) {
         await api.updateProject(Calendar.currentProject, { default_drug_name: value.trim() || null });
+    },
+
+    // ============ minerUOCR 资料目录（只读标记） ============
+    async saveOcrDir(value) {
+        const dir = (value || '').trim();
+        const status = document.getElementById('ocrDirStatus');
+        try {
+            await api.updateProject(Calendar.currentProject, { ocr_dir: dir || null });
+            const info = await api.getOcrVisits(Calendar.currentProject);
+            this.renderOcrDir(info);
+            await Calendar.refresh();
+        } catch (e) {
+            if (status) {
+                status.textContent = '保存失败：' + this.esc(e.message || '未知错误');
+                status.style.color = '#dc2626';
+            }
+        }
+    },
+    renderOcrDir(info) {
+        const status = document.getElementById('ocrDirStatus');
+        if (!status) return;
+        if (!info || !info.configured) {
+            status.textContent = '未配置：填写 minerUOCR 参与者目录后，日历自动显示访视标记（只读，不修改资料）';
+            status.style.color = '#6b7280';
+            return;
+        }
+        const unmatched = (info.unmatched || []).length;
+        status.textContent = '已扫描 ' + info.total_dirs + ' 个目录，其中 ' + info.dated_dirs +
+            ' 个有访视日期；匹配本项目 ' + Object.keys(info.mapped || {}).length +
+            ' 例，未匹配 ' + unmatched + ' 个（预筛/缩写目录，已忽略）';
+        status.style.color = '#6b7280';
     },
 
     // ============ DLT观察期 ============
@@ -241,6 +276,7 @@ const ConfigPanel = {
                 status.innerHTML = '上次扫描：' + this.esc(cfg.last_scan_at) +
                     ' ｜ 新增参与者 ' + (r.created || 0) +
                     (createdNames.length ? '（' + this.esc(createdNames.join('、')) + '）' : '') +
+                    ' ｜ EOT ' + (r.eot_updated || 0) +
                     ' ｜ C1D1 ' + (r.medications || 0) +
                     ' ｜ 基线肿评 ' + (r.assessments || 0) +
                     ' ｜ 错误 ' + ((r.errors || []).length) +
@@ -301,6 +337,7 @@ const ConfigPanel = {
             const createdLabel = dryRun ? '预计新增 ' + (r.would_create || 0) : '新增参与者 ' + r.created;
             status.textContent = prefix + '有效记录 ' + r.rows + ' 条；' + createdLabel +
                 (names.length ? '（' + names.join('、') + '）' : '') +
+                ' ｜ EOT ' + (dryRun ? r.eot_rows + ' 条待回填' : r.eot_updated) +
                 ' ｜ C1D1 ' + r.medications + ' ｜ 基线肿评 ' + r.assessments +
                 ' ｜ 库中已存在 ' + r.existing +
                 (r.skipped ? ' ｜ ' + r.reason : '') +
